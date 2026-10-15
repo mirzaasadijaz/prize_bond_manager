@@ -24,7 +24,7 @@ class CopiesPage(BasePage):
         Col("first_number", "1st bond number", 130, fmt=dash),
         Col("size", "Positions", 90, "right", numeric=True, export_raw=True,
             fmt=lambda v, r: thousands(v)),
-        Col("active", "Waiting", 80, "right", numeric=True, export_raw=True),
+        Col("bonds", "Bonds", 80, "right", numeric=True, export_raw=True),
         Col("won", "Won", 70, "right", numeric=True, export_raw=True),
         Col("price", "Price (Rs)", 110, "right"),
         Col("purchase_date", "Purchased", 110, fmt=dash),

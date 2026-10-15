@@ -3,7 +3,10 @@
 A report states, for every winning bond:
     * which copy (book) it belongs to,
     * the 1st (starting) bond number of that copy, and
-    * the exact position of the winning bond inside that copy.
+    * the exact position of the winning bond inside that copy,
+and, once it is in the Win List, where the draw / claim took place (location), how the
+claim stands (status), your feedback note and - because a bond stays in play after a win and
+can win again - which of its wins this is.
 
 The same number may be held in several copies.  When that number is drawn
 *every* bond holding it wins, so reports group the bonds by winning number and
@@ -63,6 +66,42 @@ def draw_text(win: dict) -> str:
     return f"{win.get('draw_date', '')} - {label}" if label else str(win.get("draw_date", ""))
 
 
+def location_text(win: dict) -> str:
+    """Where the win happened: the win's own location (editable), else the draw's."""
+    return (win.get("location") or win.get("draw_location") or "").strip()
+
+
+def repeat_text(win: dict) -> str:
+    """'2nd of 3 wins' for a bond that has won more than once, else an empty text."""
+    times = int(win.get("times_won") or 0)
+    if times < 2:
+        return ""
+    number = int(win.get("win_no") or 0)
+    return f"{ordinal(number)} of {times} wins" if number else f"won {times} times"
+
+
+def win_no_text(win: dict) -> str:
+    """Short cell text for the Win List: '1' for a first win, '2 of 3' for a repeat winner."""
+    times = int(win.get("times_won") or 0)
+    if times < 2:
+        return "1" if win.get("win_no") is not None else "-"
+    return f"{int(win.get('win_no') or 0)} of {times}"
+
+
+def claim_lines(win: dict) -> list[tuple[str, str]]:
+    """Location, status, feedback and repeat-win facts (only what the row actually has)."""
+    lines: list[tuple[str, str]] = []
+    if location_text(win):
+        lines.append(("Location", location_text(win)))
+    if win.get("claim_status"):
+        lines.append(("Status", win["claim_status"]))
+    if (win.get("feedback") or "").strip():
+        lines.append(("Feedback", win["feedback"].strip()))
+    if repeat_text(win):
+        lines.append(("This bond has won", repeat_text(win)))
+    return lines
+
+
 def copy_lines(win: dict) -> list[tuple[str, str]]:
     """The three facts every win report must state about one bond."""
     return [
@@ -81,7 +120,7 @@ def detail_lines(win: dict) -> list[tuple[str, str]]:
     ] + copy_lines(win)
 
 
-COPY_LABEL_WIDTH = max(len(label) for label, _ in copy_lines({}))
+COPY_LABEL_WIDTH = max(len(label) for label, _ in copy_lines({}) + [("This bond has won", "")])
 
 
 # ------------------------------------------------------------------ grouping
@@ -161,7 +200,7 @@ def win_report_text(wins: list[dict], title: str = "PRIZE BOND WIN REPORT") -> s
         for index, bond in enumerate(bonds, start=1):
             if many:
                 lines.append(f"  Bond {index} of {len(bonds)}")
-            for label, value in copy_lines(bond):
+            for label, value in copy_lines(bond) + claim_lines(bond):
                 lines.append(f"    {label.ljust(COPY_LABEL_WIDTH)} : {value}")
         lines.append("")
     return "\n".join(lines)
@@ -206,7 +245,7 @@ def win_report_html(wins: list[dict], title: str = "Prize Bond Win Report") -> s
             if many:
                 parts.append(f"<tr><td colspan='2' bgcolor='#F3F4F6'><b>Bond {index} of "
                              f"{len(bonds)}</b></td></tr>")
-            for label, value in copy_lines(bond):
+            for label, value in copy_lines(bond) + claim_lines(bond):
                 parts.append(_row(label, value))
         parts.append("</table>")
     parts.append("</body></html>")
@@ -216,18 +255,30 @@ def win_report_html(wins: list[dict], title: str = "Prize Bond Win Report") -> s
 # -------------------------------------------------------------------- export
 WIN_HEADERS = ["Draw date", "Draw", "Bond number", "Denomination", "Prize", "Prize amount",
                "Bonds with this number", "Copy (book)", "1st bond number of copy",
-               "Position in copy", "Copy size"]
+               "Position in copy", "Copy size", "Location"]
+CLAIM_HEADERS = ["Status", "Feedback", "Win no.", "Times this bond won"]
 
 
 def win_table(wins: list[dict], stamp_header: str = "Approved on",
-              stamp_key: str = "approved_at") -> tuple[list[str], list[list]]:
-    """Headers + rows for exporting wins (or pending wins) with the copy details."""
+              stamp_key: str = "approved_at",
+              claims: bool = True) -> tuple[list[str], list[list]]:
+    """Headers + rows for exporting wins (or pending wins) with the copy details.
+
+    ``claims=False`` leaves out the status / feedback / win-number columns (pending matches
+    have none of that yet).
+    """
     sizes = {group_key(g["bonds"][0]): len(g["bonds"]) for g in group_wins(wins)}
-    rows = [[w.get("draw_date"), w.get("draw_label") or "", w.get("bond_number"),
-             w.get("denomination"), w.get("prize_label") or "", w.get("prize_amount"),
-             max(int(w.get("same_number_count") or 0), sizes[group_key(w)]),
-             w.get("copy_name") or "", first_number_text(w),
-             w.get("position") if w.get("copy_name") else None,
-             w.get("copy_size") if w.get("copy_name") else None,
-             w.get(stamp_key) or ""] for w in wins]
-    return WIN_HEADERS + [stamp_header], rows
+    rows = []
+    for w in wins:
+        row = [w.get("draw_date"), w.get("draw_label") or "", w.get("bond_number"),
+               w.get("denomination"), w.get("prize_label") or "", w.get("prize_amount"),
+               max(int(w.get("same_number_count") or 0), sizes[group_key(w)]),
+               w.get("copy_name") or "", first_number_text(w),
+               w.get("position") if w.get("copy_name") else None,
+               w.get("copy_size") if w.get("copy_name") else None,
+               location_text(w)]
+        if claims:
+            row += [w.get("claim_status") or "", (w.get("feedback") or "").strip(),
+                    w.get("win_no"), w.get("times_won")]
+        rows.append(row + [w.get(stamp_key) or ""])
+    return WIN_HEADERS + (CLAIM_HEADERS if claims else []) + [stamp_header], rows

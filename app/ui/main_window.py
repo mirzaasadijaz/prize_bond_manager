@@ -70,7 +70,9 @@ class MainWindow(QMainWindow):
             column.addWidget(button)
         column.addStretch(1)
         db_name = Path(ctx.db.path).name if ctx.db.path != ":memory:" else "(in memory)"
-        column.addWidget(label(f"Data file: {db_name}", "muted"))
+        data_label = label(f"Data file: {db_name}", "muted")
+        data_label.setToolTip(str(ctx.db.path))              # the full location
+        column.addWidget(data_label)
 
         central = QWidget()
         layout = QHBoxLayout(central)

@@ -23,6 +23,7 @@ class PendingPage(BasePage):
     COLUMNS = [
         Col("draw_date", "Draw date", 92),
         Col("draw_label", "Draw", 90, fmt=dash),
+        Col("draw_location", "Location", 90, fmt=dash),
         Col("bond_number", "Bond number", 104, sort_key="bond_num"),
         Col("denomination", "Price (Rs)", 86, "right", numeric=True, export_raw=True,
             fmt=lambda v, r: f"{v:,}"),
@@ -31,6 +32,8 @@ class PendingPage(BasePage):
         Col("copy", "Copy (book)", 104),
         Col("copy_first_number", "1st bond of copy", 126, fmt=dash),
         Col("where", "Position in copy", 124),
+        Col("times_won", "Won before", 88, "right", numeric=True, export_raw=True,
+            fmt=lambda v, r: f"{v}x" if v else "-"),
         Col("check", "Check", 150),
         Col("found_at", "Found", 130),
     ]
@@ -39,9 +42,9 @@ class PendingPage(BasePage):
         super().__init__(ctx, parent)
         self.agent = ctx.agent
         header = PageHeader("Pending Wins", "Bonds the win-checking agent matched with winning "
-                            "numbers. Approve them to move them from the waiting list to the Win "
-                            "List - or reject any that look wrong. A number held in several copies "
-                            "wins in every copy.")
+                            "numbers. Approve them to add them to the Win List - or reject any "
+                            "that look wrong. A number held in several copies wins in every copy, "
+                            "and a bond that won before can win again.")
         self.approve_button = header.add_action(button("Approve selected", "primary"))
         self.approve_all_button = header.add_action(button("Approve all"))
         self.reject_button = header.add_action(button("Reject selected", "danger"))
@@ -76,7 +79,7 @@ class PendingPage(BasePage):
         self.panel = TablePanel(self.COLUMNS, export_name="pending_wins", sheet_name="Pending wins",
                                 row_style=_style, placeholder="Search pending wins ...",
                                 empty_text="Nothing to review.\nWhen winning numbers match one of "
-                                           "your waiting bonds it will appear here.")
+                                           "one of your bonds it will appear here.")
         self.panel.add_tool(self.view)
         self.panel.selection_changed.connect(self._update_buttons)
         self.panel.row_activated.connect(self._show_report)
@@ -140,8 +143,7 @@ class PendingPage(BasePage):
         # Bonds in other copies holding the same winning number win too.
         extra = len(set(self.db.pending_siblings(chosen)) - set(chosen))
         flagged = sum(1 for r in rows if r["warning"])
-        text = (f"Approve {len(rows):,} win(s)?\n\nThey will be moved from your waiting list to "
-                "the Win List.")
+        text = f"Approve {len(rows):,} win(s)?\n\nThey will be added to the Win List."
         if extra:
             text += (f"\n\n{extra:,} more bond(s) hold the same winning number(s) in other copies, "
                      f"so they win too: {len(rows) + extra:,} bond(s) in total will be moved.")
@@ -161,14 +163,15 @@ class PendingPage(BasePage):
                   "winning bond." if n else "")
         actions.show_win_report(
             self, [w for w in wins if w], "Approved wins",
-            f"{result.approved:,} bond(s) moved from the waiting list to the Win List.{shared} For "
-            "each win: the copy it belongs to, that copy's 1st bond number, and its position.")
+            f"{result.approved:,} win(s) added to the Win List.{shared} For each win: the copy it "
+            "belongs to, that copy's 1st bond number, its position and where it was drawn. Set the "
+            "claim status and your feedback in the Win List.")
 
     def _reject(self) -> None:
         rows = self.panel.selected_rows()
         if rows and confirm(
                 self, "Reject matches",
-                f"Reject {len(rows):,} match(es)?\n\nThe bonds stay in your waiting list and will "
+                f"Reject {len(rows):,} match(es)?\n\nThe bonds stay in your list and will "
                 "not be flagged again for this draw. You can restore them from the 'Rejected' view."
                 "\n\nOther bonds holding the same number are not affected - reject those too if "
                 "the number should not count.",

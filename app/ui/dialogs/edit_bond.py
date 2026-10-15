@@ -27,7 +27,9 @@ class EditBondDialog(QDialog):
         self.price.set_value(bond["denomination"])
         self.date = DateField()
         self.date.set_value(bond["purchase_date"])
-        status = "Won (drawn)" if bond["status"] == "won" else "Active (waiting for a draw)"
+        status = "Active (takes part in every draw)"
+        if bond["times_won"]:
+            status += f" - has won {bond['times_won']} time(s)"
         if bond["pending_count"]:
             status += " - a possible win is waiting for approval"
         self.copy_combo = QComboBox()
@@ -47,7 +49,7 @@ class EditBondDialog(QDialog):
         form.addRow("Bond number", self.number)
         form.addRow("Price (Rs)", self.price)
         form.addRow("Date of purchase", self.date)
-        form.addRow("Status", label(status))
+        form.addRow("Status", label(status, wrap=True))
         form.addRow("Copy (book)", self.copy_combo)
         form.addRow("Position in copy", self.position)
 
@@ -61,9 +63,9 @@ class EditBondDialog(QDialog):
         footer.addWidget(save)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        if bond["status"] == "won":
-            layout.addWidget(label("This bond has already been drawn. Changing it here does not "
-                                   "change the saved win record.", "muted", wrap=True))
+        if bond["times_won"]:
+            layout.addWidget(label("This bond has won before. Changing it here does not change the "
+                                   "saved win records.", "muted", wrap=True))
         layout.addLayout(footer)
 
     def _copy_changed(self) -> None:

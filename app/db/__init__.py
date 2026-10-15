@@ -3,6 +3,7 @@ from .bonds_repo import (BondsMixin, CopyNameError, DuplicateBondError,  # noqa:
                          PositionTakenError)
 from .core import DatabaseCore, chunks, now_iso, today_iso  # noqa: F401
 from .draws_repo import DrawsMixin
+from .lock import DatabaseInUseError  # noqa: F401
 from .wins_repo import WinsMixin
 
 

@@ -1,8 +1,9 @@
 """The win-checking agent and the approval workflow around it.
 
-The agent never takes a bond out of the waiting list on its own.  It only
-*queues* possible wins in the temporary pending list.  A bond reaches the final
-win list when -- and only when -- the user approves it.
+The agent never records a win on its own.  It only *queues* possible wins in the
+temporary pending list.  A win reaches the final Win List when -- and only when --
+the user approves it.  Bonds stay in play after a win, so the agent keeps checking
+them against every later draw: one bond can win more than once.
 
 When it runs (``trigger`` in the activity log):
     startup   - when the app opens
@@ -42,7 +43,7 @@ class WinAgent:
 
     # -- scanning --------------------------------------------------------
     def scan(self, draw_id: int | None = None, trigger: str = "manual") -> ScanResult:
-        """Check the waiting list against winning numbers (all draws, or one)."""
+        """Check every bond against winning numbers (all draws, or one)."""
         result = self.db.scan_for_matches(draw_id)
         result.trigger = trigger
         self.db.set_setting(LAST_RUN_SETTING, result.ran_at)

@@ -45,14 +45,12 @@ class EditCopyDialog(QDialog):
 
 
 def _status(value, row) -> str:
-    if row["status"] == "won":
-        return "Won (drawn)"
-    return "Active - win pending" if row["pending_count"] else "Active"
+    if row["pending_count"]:
+        return "Win pending"
+    return f"Won {row['times_won']}x" if row["times_won"] else "-"
 
 
 def _style(row):
-    if row["status"] == "won":
-        return theme.WON_TEXT, "#F1F5F9"
     if row["pending_count"]:
         return theme.WARNING_TEXT, theme.WARNING_BG
     return None
@@ -75,14 +73,14 @@ class CopyContentsDialog(QDialog):
         db = ctx.db
         copy = db.get_copy(copy_id)
         bonds = db.copy_bonds(copy_id)
-        active = sum(1 for b in bonds if b["status"] == "active")
+        won = sum(1 for b in bonds if b["times_won"])
         self.setWindowTitle(f"Copy: {copy['name']}")
         self.resize(640, 560)
         layout = QVBoxLayout(self)
         layout.addWidget(label(copy["name"], "section"))
         layout.addWidget(label(
             f"1st bond number: {copy['first_number'] or '-'}   |   {copy['size']} position(s)   |   "
-            f"{len(bonds)} bond(s) on file, {active} still waiting"
+            f"{len(bonds)} bond(s) on file, {won} have won"
             + (f"   |   {copy['note']}" if copy["note"] else ""), "muted", wrap=True))
         self.panel = TablePanel(self.COLUMNS, export_name=f"copy_{copy['name']}",
                                 sheet_name=copy["name"], row_style=_style,

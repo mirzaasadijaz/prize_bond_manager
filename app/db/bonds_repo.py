@@ -23,14 +23,16 @@ class CopyNameError(ValueError):
 
 # ``same_count`` = how many bonds hold this number (this denomination), including
 # the bond itself.  Above 1 means the number sits in several copies: when it is
-# drawn, every one of those bonds wins.
+# drawn, every one of those bonds wins.  ``times_won`` = how often this very bond
+# has won (a bond stays in play after a win, so it can win again).
 BOND_SELECT = """
 SELECT b.id, b.number, b.num, b.denomination, b.purchase_date, b.status,
        b.copy_id, b.position, b.created_at,
        c.name AS copy_name, c.first_number AS copy_first_number, c.size AS copy_size,
        COALESCE(pw.cnt, 0) AS pending_count,
        (SELECT COUNT(*) FROM bonds o
-         WHERE o.num = b.num AND o.denomination = b.denomination) AS same_count
+         WHERE o.num = b.num AND o.denomination = b.denomination) AS same_count,
+       (SELECT COUNT(*) FROM wins x WHERE x.bond_id = b.id) AS times_won
 FROM bonds b
 LEFT JOIN copies c ON c.id = b.copy_id
 LEFT JOIN (SELECT bond_id, COUNT(*) AS cnt FROM pending_wins
@@ -40,15 +42,15 @@ LEFT JOIN (SELECT bond_id, COUNT(*) AS cnt FROM pending_wins
 
 class BondsMixin:
     # ------------------------------------------------------------ queries
-    def list_bonds(self, status: str | None = None, denomination: int | None = None,
+    def list_bonds(self, won: bool | None = None, denomination: int | None = None,
                    number_from: int | None = None, number_to: int | None = None,
                    date_from: str | None = None, date_to: str | None = None,
                    copy_id: int | None = None) -> list[dict]:
         where: list[str] = []
         params: list = []
-        if status:
-            where.append("b.status = ?")
-            params.append(status)
+        if won is not None:                  # True: has won before, False: never won
+            where.append(("" if won else "NOT ") +
+                         "EXISTS (SELECT 1 FROM wins x WHERE x.bond_id = b.id)")
         if denomination is not None:
             where.append("b.denomination = ?")
             params.append(denomination)
@@ -74,20 +76,15 @@ class BondsMixin:
         rows = self.query(BOND_SELECT + " WHERE b.id = ?", (bond_id,))
         return rows[0] if rows else None
 
-    def denominations(self, status: str | None = None) -> list[int]:
-        sql = "SELECT DISTINCT denomination FROM bonds"
-        params: tuple = ()
-        if status:
-            sql += " WHERE status = ?"
-            params = (status,)
-        return [r["denomination"] for r in
-                self.conn.execute(sql + " ORDER BY denomination", params)]
+    def denominations(self) -> list[int]:
+        return [r["denomination"] for r in self.conn.execute(
+            "SELECT DISTINCT denomination FROM bonds ORDER BY denomination")]
 
     def held_keys(self, denomination: int, keys: Sequence[int],
                   copy_id: int | None = None) -> set[int]:
         """Which of ``keys`` are already held as bonds of this denomination.
 
-        Every bond counts (waiting or won, in any copy or none) unless ``copy_id``
+        Every bond counts (in any copy or none) unless ``copy_id``
         is given, which restricts the check to that one copy.
         """
         found: set[int] = set()
@@ -313,8 +310,7 @@ class BondsMixin:
             """
             SELECT c.id, c.name, c.first_number, c.size, c.note, c.created_at,
                    COUNT(b.id) AS bonds,
-                   COALESCE(SUM(b.status = 'active'), 0) AS active,
-                   COALESCE(SUM(b.status = 'won'), 0) AS won,
+                   COALESCE(SUM(EXISTS (SELECT 1 FROM wins x WHERE x.bond_id = b.id)), 0) AS won,
                    MIN(b.denomination) AS min_denomination,
                    MAX(b.denomination) AS max_denomination,
                    MIN(b.purchase_date) AS purchase_date

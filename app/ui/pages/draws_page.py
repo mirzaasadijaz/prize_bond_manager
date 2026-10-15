@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import re
 
-from PyQt6.QtWidgets import (QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLineEdit,
-                             QPlainTextEdit, QSplitter, QVBoxLayout, QWidget)
+from PyQt6.QtCore import QStringListModel, Qt
+from PyQt6.QtWidgets import (QComboBox, QCompleter, QFormLayout, QGroupBox, QHBoxLayout,
+                             QLineEdit, QPlainTextEdit, QSplitter, QVBoxLayout, QWidget)
 
 from ...config import DEFAULT_PRIZE_TIERS
 from ...processing.importer import load_records
@@ -32,6 +33,7 @@ class DrawsPage(BasePage):
         Col("draw_date", "Draw date", 100),
         Col("price", "Price", 110),
         Col("label", "Draw", 150, fmt=dash),
+        Col("location", "Location", 100, fmt=dash),
         Col("numbers", "Numbers", 80, "right", numeric=True, export_raw=True),
         Col("pending", "Pending", 75, "right", numeric=True, export_raw=True),
         Col("wins", "Wins", 70, "right", numeric=True, export_raw=True),
@@ -49,8 +51,8 @@ class DrawsPage(BasePage):
         self._loading = False
         self.root.addWidget(PageHeader(
             "Draw Results",
-            "Enter the winning numbers of a draw. The win-checking agent then compares them with "
-            "your waiting bonds and lists matches for your approval."))
+            "Enter the winning numbers of a draw and where it was held. The win-checking agent "
+            "then compares them with all your bonds and lists matches for your approval."))
 
         # -- left: the entry form -------------------------------------------------
         self.target = QComboBox()
@@ -59,13 +61,20 @@ class DrawsPage(BasePage):
         self.price = DenominationBox(allow_any=True)
         self.price.set_value(DenominationBox.remembered())
         self.label_edit = QLineEdit()
-        self.label_edit.setPlaceholderText("optional, e.g. Draw #98 - Lahore")
+        self.label_edit.setPlaceholderText("optional, e.g. Draw #98")
+        self.location_edit = QLineEdit()
+        self.location_edit.setPlaceholderText("where the draw was held, e.g. Lahore")
+        self.location_model = QStringListModel(self)
+        completer = QCompleter(self.location_model, self.location_edit)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.location_edit.setCompleter(completer)
         details = QGroupBox("1. Which draw?")
         form = QFormLayout(details)
         form.addRow("Draw", self.target)
         form.addRow("Draw date", self.date)
         form.addRow("Bond price (Rs)", self.price)
         form.addRow("Draw name", self.label_edit)
+        form.addRow("Location", self.location_edit)
 
         self.tier = QComboBox()
         self.tier.setEditable(True)
@@ -155,6 +164,7 @@ class DrawsPage(BasePage):
         return money(draw["denomination"]) if draw["denomination"] else "Any price"
 
     def refresh(self) -> None:
+        self.location_model.setStringList(self.db.known_locations())
         draws = self.db.list_draws()
         for draw in draws:
             draw["price"] = self._price_text(draw)
@@ -164,7 +174,9 @@ class DrawsPage(BasePage):
         self.target.clear()
         self.target.addItem("New draw", None)
         for draw in draws:
-            name = f"{draw['draw_date']} - {draw['price']}" + (f" - {draw['label']}" if draw["label"] else "")
+            name = (f"{draw['draw_date']} - {draw['price']}"
+                    + (f" - {draw['label']}" if draw["label"] else "")
+                    + (f" - {draw['location']}" if draw["location"] else ""))
             self.target.addItem(f"Add to: {name} ({draw['numbers']:,} numbers)", draw["id"])
             if draw["id"] == keep:
                 self.target.setCurrentIndex(self.target.count() - 1)
@@ -176,12 +188,13 @@ class DrawsPage(BasePage):
         if self._loading:
             return
         draw = self.db.get_draw(self.target.currentData()) if self.target.currentData() else None
-        for widget in (self.date, self.price, self.label_edit):
+        for widget in (self.date, self.price, self.label_edit, self.location_edit):
             widget.setEnabled(draw is None)
         if draw:
             self.date.set_value(draw["draw_date"])
             self.price.set_value(draw["denomination"])
             self.label_edit.setText(draw["label"] or "")
+            self.location_edit.setText(draw["location"] or "")
         self.save_button.setText("Add numbers to this draw and check my bonds" if draw
                                  else "Save draw and check my bonds")
 
@@ -286,7 +299,8 @@ class DrawsPage(BasePage):
                 warn(self, "Bond price needed", "Enter the price of the bonds this draw is for "
                      "(for example 750), or choose 'Any denomination'.")
                 return
-            draw_id = self.db.add_draw(self.date.value(), price, self.label_edit.text())
+            draw_id = self.db.add_draw(self.date.value(), price, self.label_edit.text(),
+                                       self.location_edit.text())
             self.price.remember()
         items = [(r["number"], r["num"], r["tier"], r["amount"]) for r in self.staged]
         added, skipped = self.db.add_winning_numbers(draw_id, items)
@@ -303,7 +317,7 @@ class DrawsPage(BasePage):
         elif scan.new_pending:
             self.ctx.offer_review(self, scan, "Draw saved", lead)
         else:
-            info(self, "Draw saved", lead + "\n\nNone of your waiting bonds match these numbers.")
+            info(self, "Draw saved", lead + "\n\nNone of your bonds match these numbers.")
 
     def _delete_draw(self) -> None:
         rows = self.draws.selected_rows()

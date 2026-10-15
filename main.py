@@ -3,22 +3,22 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prize Bond Manager")
-    parser.add_argument("--db", help="SQLite file to use (default: data/prize_bonds.db)")
+    parser.add_argument("--db", help="data file to use, e.g. my.db - a name without a folder is "
+                                     "kept next to the program (default: prize_bonds.db there)")
     parser.add_argument("--demo", action="store_true",
-                        help="open a fresh demo database (data/demo.db) filled with sample bonds, "
-                             "copies and a draw")
+                        help="open a fresh demo database (demo.db next to the program) filled "
+                             "with sample bonds, copies and a draw")
     args = parser.parse_args(argv)
 
     from PyQt6.QtWidgets import QApplication, QMessageBox
 
     from app import demo
-    from app.config import APP_NAME, PROJECT_ROOT, default_db_path
-    from app.db import Database
+    from app.config import APP_DIR, APP_NAME, resolve_db_path
+    from app.db import Database, DatabaseInUseError
     from app.ui.context import AppContext
     from app.ui.main_window import MainWindow
     from app.ui.theme import STYLESHEET
@@ -30,13 +30,19 @@ def main(argv: list[str] | None = None) -> int:
     app.setStyleSheet(STYLESHEET)
 
     if args.demo:
-        path = PROJECT_ROOT / "data" / "demo.db"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.unlink(missing_ok=True)
+        path = APP_DIR / "demo.db"
     else:
-        path = Path(args.db).expanduser() if args.db else default_db_path()
+        path = resolve_db_path(args.db)
     try:
-        db = Database(path)
+        db = Database(path, lock=True)
+        if args.demo:
+            # only a demo file that no other window has open may be replaced
+            db.close()
+            path.unlink(missing_ok=True)
+            db = Database(path, lock=True)
+    except DatabaseInUseError as exc:
+        QMessageBox.warning(None, APP_NAME, str(exc))
+        return 1
     except Exception as exc:  # unreadable file, newer schema, no permission ...
         QMessageBox.critical(None, APP_NAME, f"The data file could not be opened:\n{path}\n\n{exc}")
         return 1

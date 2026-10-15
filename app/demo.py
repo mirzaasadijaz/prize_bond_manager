@@ -23,7 +23,7 @@ def seed(db: Database) -> None:
     db.add_copy("Copy 5", _numbers("100050-100060"), 750, "2025-06-01")
     db.add_loose_bonds(_numbers("123456, 234567"), 100, "2026-06-01")
 
-    draw = db.add_draw("2026-10-01", 750, "Draw #98 (demo)")
+    draw = db.add_draw("2026-10-01", 750, "Draw #98 (demo)", "Lahore")
     winners = [("100056", "1st Prize", 1_500_000), ("777777", "2nd Prize", 500_000),
                ("900007", "3rd Prize", 9_300), ("812345", "3rd Prize", 9_300)]
     db.add_winning_numbers(draw, [(*_numbers(n)[0], tier, amount) for n, tier, amount in winners])

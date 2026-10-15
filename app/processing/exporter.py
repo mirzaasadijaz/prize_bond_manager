@@ -86,11 +86,11 @@ def write_csv_folder(folder: str | Path, sheets: dict[str, Table]) -> list[Path]
 
 # ------------------------------------------------------- table builders
 def bonds_table(bonds: list[dict]) -> Table:
-    headers = ["Bond number", "Denomination", "Purchase date", "Status", "Win pending",
+    headers = ["Bond number", "Denomination", "Purchase date", "Times won", "Win pending",
                "Bonds with this number", "Copy (book)", "Position in copy",
                "1st bond number of copy"]
     rows = [[b["number"], b["denomination"], b["purchase_date"] or "",
-             "Active" if b["status"] == "active" else "Won",
+             b.get("times_won") or 0,
              "Yes" if b.get("pending_count") else "",
              b.get("same_count") or 1,
              b["copy_name"] or "", b["position"], b["copy_first_number"] or ""]
@@ -100,32 +100,35 @@ def bonds_table(bonds: list[dict]) -> Table:
 
 def copies_table(copies: list[dict]) -> Table:
     headers = ["Copy (book)", "1st bond number", "Size (positions)", "Bonds on file",
-               "Active", "Won", "Denomination", "First purchase date", "Note"]
+               "Bonds that won", "Denomination", "First purchase date", "Note"]
 
     def denomination(c):
         low, high = c["min_denomination"], c["max_denomination"]
         return "" if low is None else (low if low == high else f"{low}-{high}")
 
-    rows = [[c["name"], c["first_number"] or "", c["size"], c["bonds"], c["active"], c["won"],
+    rows = [[c["name"], c["first_number"] or "", c["size"], c["bonds"], c["won"],
              denomination(c), c["purchase_date"] or "", c["note"] or ""] for c in copies]
     return headers, rows
 
 
 def draws_table(draws: list[dict]) -> Table:
-    headers = ["Draw date", "Denomination", "Label", "Winning numbers", "Pending", "Approved wins"]
+    headers = ["Draw date", "Denomination", "Label", "Location", "Winning numbers", "Pending",
+               "Approved wins"]
     rows = [[d["draw_date"], d["denomination"] if d["denomination"] else "All",
-             d["label"] or "", d["numbers"], d["pending"], d["wins"]] for d in draws]
+             d["label"] or "", d.get("location") or "", d["numbers"], d["pending"], d["wins"]]
+            for d in draws]
     return headers, rows
 
 
 def winning_numbers_table(db) -> Table:
-    headers = ["Draw date", "Draw", "Denomination", "Winning number", "Prize", "Prize amount"]
+    headers = ["Draw date", "Draw", "Location", "Denomination", "Winning number", "Prize",
+               "Prize amount"]
     data = db.query(
-        "SELECT d.draw_date, d.label, d.denomination, w.number, w.prize_label, w.prize_amount "
-        "FROM winning_numbers w JOIN draws d ON d.id = w.draw_id "
+        "SELECT d.draw_date, d.label, d.location, d.denomination, w.number, w.prize_label, "
+        "w.prize_amount FROM winning_numbers w JOIN draws d ON d.id = w.draw_id "
         "ORDER BY d.draw_date DESC, d.id DESC, w.prize_label, w.num")
-    rows = [[r["draw_date"], r["label"] or "", r["denomination"] or "All", r["number"],
-             r["prize_label"], r["prize_amount"]] for r in data]
+    rows = [[r["draw_date"], r["label"] or "", r["location"] or "", r["denomination"] or "All",
+             r["number"], r["prize_label"], r["prize_amount"]] for r in data]
     return headers, rows
 
 
@@ -137,11 +140,10 @@ def activity_table(entries: list[dict]) -> Table:
 def collect_all(db) -> dict[str, Table]:
     """Every list in the app, ready for ``write_workbook`` / ``write_csv_folder``."""
     sheets: dict[str, Table] = {"All bonds": bonds_table(db.list_bonds())}
-    for denomination in db.denominations("active"):
-        sheets[f"Waiting Rs {denomination}"] = bonds_table(
-            db.list_bonds(status="active", denomination=denomination))
+    for denomination in db.denominations():
+        sheets[f"Bonds Rs {denomination}"] = bonds_table(db.list_bonds(denomination=denomination))
     sheets["Copies"] = copies_table(db.list_copies())
-    sheets["Pending wins"] = win_table(db.list_pending(), "Found on", "found_at")
+    sheets["Pending wins"] = win_table(db.list_pending(), "Found on", "found_at", claims=False)
     sheets["Win list"] = win_table(db.list_wins())
     sheets["Draws"] = draws_table(db.list_draws())
     sheets["Winning numbers"] = winning_numbers_table(db)

@@ -3,18 +3,20 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from ..config import FINAL_WIN_STATUS, WIN_STATUSES
 from ..models import ApprovalResult, ScanResult
-from ..processing.numbers import normalize_number, NumberError
 from .core import chunks, now_iso
 
-# A bond matches when it is still waiting (status 'active'), carries a winning
-# number and has the draw's denomination (a draw with no denomination matches all).
-# Every bond that holds the number matches - the same number may sit in several
-# copies, and when it is drawn they all win.
+KEEP = object()        # "leave this field as it is" for update_win_details
+
+# A bond matches when it carries a winning number and has the draw's denomination
+# (a draw with no denomination matches all).  Every bond that holds the number
+# matches - the same number may sit in several copies, and when it is drawn they
+# all win.  A bond that has already won still takes part in every later draw.
 MATCH_FROM = """
 FROM winning_numbers w
 JOIN draws d ON d.id = w.draw_id
-JOIN bonds b ON b.num = w.num AND b.status = 'active'
+JOIN bonds b ON b.num = w.num
              AND (d.denomination IS NULL OR b.denomination = d.denomination)
 WHERE (:draw_id IS NULL OR w.draw_id = :draw_id)
 """
@@ -25,7 +27,9 @@ SELECT p.id AS pending_id, p.status AS pending_status, p.found_at, p.resolved_at
        b.purchase_date, b.position, b.status AS bond_status,
        c.id AS copy_id, c.name AS copy_name, c.first_number AS copy_first_number,
        c.size AS copy_size,
-       d.id AS draw_id, d.draw_date, d.label AS draw_label, d.denomination AS draw_denomination,
+       d.id AS draw_id, d.draw_date, d.label AS draw_label, d.location AS draw_location,
+       d.denomination AS draw_denomination,
+       (SELECT COUNT(*) FROM wins x WHERE x.bond_id = b.id) AS times_won,
        w.id AS winning_number_id, w.number AS winning_number, w.num AS win_num,
        w.prize_label, w.prize_amount,
        (SELECT COUNT(*) FROM pending_wins q
@@ -41,12 +45,19 @@ LEFT JOIN copies c ON c.id = b.copy_id
 """
 
 # Wins sharing a draw, a denomination and a number are the same winning number
-# held in several copies.
+# held in several copies.  ``times_won`` / ``win_no``: the same bond can win in
+# several draws; ``win_no`` says which one of them this row is (oldest first).
 WIN_SELECT = """
 SELECT w.*,
        (SELECT COUNT(*) FROM wins x
          WHERE x.num = w.num AND x.denomination = w.denomination
-           AND x.draw_date = w.draw_date AND x.draw_id IS w.draw_id) AS same_number_count
+           AND x.draw_date = w.draw_date AND x.draw_id IS w.draw_id) AS same_number_count,
+       CASE WHEN w.bond_id IS NULL THEN 1 ELSE
+            (SELECT COUNT(*) FROM wins y WHERE y.bond_id = w.bond_id) END AS times_won,
+       CASE WHEN w.bond_id IS NULL THEN 1 ELSE
+            (SELECT COUNT(*) FROM wins y WHERE y.bond_id = w.bond_id
+               AND (y.draw_date < w.draw_date
+                    OR (y.draw_date = w.draw_date AND y.id <= w.id))) END AS win_no
 FROM wins w
 """
 
@@ -54,15 +65,14 @@ FROM wins w
 class WinsMixin:
     # ------------------------------------------------------------- agent scan
     def scan_for_matches(self, draw_id: int | None = None) -> ScanResult:
-        """Compare the waiting list with winning numbers; queue new matches as pending.
+        """Compare every bond with the winning numbers; queue new matches as pending.
 
         Safe to run repeatedly: a (bond, winning number) pair is queued once, and
         pairs you already rejected are not queued again.
         """
         result = ScanResult(draw_id=draw_id, ran_at=now_iso())
         params = {"draw_id": draw_id}
-        result.bonds_checked = self.conn.execute(
-            "SELECT COUNT(*) FROM bonds WHERE status = 'active'").fetchone()[0]
+        result.bonds_checked = self.conn.execute("SELECT COUNT(*) FROM bonds").fetchone()[0]
         result.draws_checked = 1 if draw_id is not None else self.conn.execute(
             "SELECT COUNT(*) FROM draws").fetchone()[0]
         with self.tx():
@@ -106,16 +116,18 @@ class WinsMixin:
 
     def approve_pending(self, pending_ids: Sequence[int],
                         include_siblings: bool = True) -> ApprovalResult:
-        """Move approved pending wins from the waiting list to the win list.
+        """Turn approved pending matches into Win List records.
 
         When a number wins, every bond holding it wins: approving one pending
         match also approves the other *pending* bonds with the same winning
         number (``include_siblings``; ones you rejected stay rejected).
 
         Each approval writes a win row with a snapshot of the copy details
-        (copy name, first bond number, position) and marks the bond as won.
-        A pending row that no longer makes sense (bond edited, wrong
-        denomination) is rejected with an explanation instead.
+        (copy name, first bond number, position) and the draw's location.  The
+        bond itself stays in your list and in every later draw - it can win
+        again, and then gets another win row.  A pending row that no longer
+        makes sense (bond edited, wrong denomination) is rejected with an
+        explanation instead.
         """
         result = ApprovalResult()
         stamp = now_iso()
@@ -152,15 +164,14 @@ class WinsMixin:
                     win_id = self.conn.execute(
                         "INSERT INTO wins (bond_id, draw_id, bond_number, num, denomination, "
                         "draw_date, draw_label, prize_label, prize_amount, copy_id, copy_name, "
-                        "copy_first_number, position, copy_size, approved_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "copy_first_number, position, copy_size, approved_at, location) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (row["bond_id"], row["draw_id"], row["bond_number"], row["bond_num"],
                          row["denomination"], row["draw_date"], row["draw_label"],
                          row["prize_label"], row["prize_amount"], row["copy_id"],
                          row["copy_name"], row["copy_first_number"], row["position"],
-                         row["copy_size"], stamp),
+                         row["copy_size"], stamp, row["draw_location"]),
                     ).lastrowid
-                self.conn.execute("UPDATE bonds SET status = 'won' WHERE id = ?", (row["bond_id"],))
                 self.conn.execute(
                     "UPDATE pending_wins SET status = 'approved', resolved_at = ?, note = NULL "
                     "WHERE id = ?", (stamp, pid))
@@ -170,14 +181,13 @@ class WinsMixin:
                 shared = (f" ({result.with_siblings} of them because they hold the same number as "
                           "another winning bond)") if result.with_siblings else ""
                 self.log("Wins approved",
-                         f"{len(result.win_ids)} bond(s) moved from the waiting list to the "
-                         f"win list{shared}")
+                         f"{len(result.win_ids)} win(s) added to the Win List{shared}")
             if result.rejected:
                 self.log("Pending wins dropped", f"{len(result.rejected)} could not be approved")
         return result
 
     def reject_pending(self, pending_ids: Sequence[int], note: str | None = None) -> int:
-        """Dismiss pending wins; the bonds simply stay in the waiting list."""
+        """Dismiss pending wins; the bonds are not affected."""
         changed = 0
         stamp = now_iso()
         with self.tx():
@@ -214,8 +224,60 @@ class WinsMixin:
     def recent_wins(self, limit: int = 8) -> list[dict]:
         return self.query(WIN_SELECT + " ORDER BY w.approved_at DESC, w.id DESC LIMIT ?", (limit,))
 
+    def update_win_details(self, win_ids: Sequence[int], *, location=KEEP, claim_status=KEEP,
+                           feedback=KEEP) -> int:
+        """Set the location, claim status and/or feedback note of wins.
+
+        Only the fields you pass are changed (``KEEP`` leaves one alone); an empty
+        text clears a location or a feedback note.
+        """
+        sets: list[str] = []
+        values: list = []
+        said: list[str] = []
+        if claim_status is not KEEP:
+            if claim_status not in WIN_STATUSES:
+                raise ValueError(f"'{claim_status}' is not a win status "
+                                 f"(use one of: {', '.join(WIN_STATUSES)}).")
+            sets.append("claim_status = ?")
+            values.append(claim_status)
+            said.append(f"status {claim_status}")
+        if location is not KEEP:
+            sets.append("location = ?")
+            values.append((location or "").strip() or None)
+            said.append("location changed")
+        if feedback is not KEEP:
+            sets.append("feedback = ?")
+            values.append((feedback or "").strip() or None)
+            said.append("feedback changed")
+        if not sets:
+            return 0
+        sets.append("updated_at = ?")
+        values.append(now_iso())
+        changed = 0
+        with self.tx():
+            for part in chunks(list(win_ids), 500):
+                marks = ",".join("?" * len(part))
+                changed += self.conn.execute(
+                    f"UPDATE wins SET {', '.join(sets)} WHERE id IN ({marks})",
+                    (*values, *part)).rowcount
+            if changed:
+                self.log("Win details updated", f"{changed} win(s): {', '.join(said)}")
+        return changed
+
+    def known_locations(self) -> list[str]:
+        """Every location used so far (draws and wins), for suggestions while typing."""
+        rows = self.conn.execute(
+            "SELECT location FROM draws WHERE location IS NOT NULL AND location <> '' "
+            "UNION SELECT location FROM wins WHERE location IS NOT NULL AND location <> '' "
+            "ORDER BY 1 COLLATE NOCASE")
+        return [r["location"] for r in rows]
+
     def revert_wins(self, win_ids: Sequence[int]) -> int:
-        """Undo approvals: the bond returns to the waiting list, the win is removed."""
+        """Undo approvals: the win record is removed (the bond itself was never touched).
+
+        The match goes to the 'Rejected' view of the pending list (note 'Win reverted'),
+        so the agent does not queue it again; restore it from there to review it again.
+        """
         reverted = 0
         stamp = now_iso()
         with self.tx():
@@ -224,64 +286,40 @@ class WinsMixin:
                 if win is None:
                     continue
                 if win["bond_id"] is not None:
-                    others = self.conn.execute(
-                        "SELECT COUNT(*) FROM wins WHERE bond_id = ? AND id <> ?",
-                        (win["bond_id"], wid)).fetchone()[0]
-                    if others == 0:
-                        self.conn.execute("UPDATE bonds SET status = 'active' WHERE id = ?",
-                                          (win["bond_id"],))
                     self.conn.execute(
                         "UPDATE pending_wins SET status = 'rejected', resolved_at = ?, "
                         "note = 'Win reverted' WHERE bond_id = ? AND draw_id = ? "
                         "AND status = 'approved'", (stamp, win["bond_id"], win["draw_id"]))
-                else:
-                    self._recreate_bond_from_win(win)
                 self.conn.execute("DELETE FROM wins WHERE id = ?", (wid,))
                 reverted += 1
             if reverted:
-                self.log("Wins reverted", f"{reverted} bond(s) moved back to the waiting list")
+                self.log("Wins reverted", f"{reverted} win(s) removed from the Win List")
         return reverted
-
-    def _recreate_bond_from_win(self, win) -> None:
-        """The bond row was deleted after the win; rebuild it from the snapshot."""
-        try:
-            display, key = normalize_number(win["bond_number"])
-        except NumberError:
-            return
-        copy_id, position = win["copy_id"], win["position"]
-        if copy_id is not None and position is not None:
-            # Back into its old slot if the copy still exists and the slot / number is free;
-            # otherwise it returns as a loose bond (other bonds may hold the same number).
-            taken = self.conn.execute(
-                "SELECT 1 FROM bonds WHERE copy_id = ? "
-                "AND (position = ? OR (denomination = ? AND num = ?))",
-                (copy_id, position, win["denomination"], key)).fetchone()
-            if taken or self.get_copy(copy_id) is None:
-                copy_id, position = None, None
-        else:
-            copy_id, position = None, None
-        self._insert_bonds([(display, key, position, None)], win["denomination"], copy_id)
 
     # ------------------------------------------------------------- dashboard
     def dashboard_stats(self) -> dict:
         one = lambda sql: self.conn.execute(sql).fetchone()  # noqa: E731
-        active = one("SELECT COUNT(*) AS c, COALESCE(SUM(denomination), 0) AS v "
-                     "FROM bonds WHERE status = 'active'")
-        total = one("SELECT COUNT(*) AS c, COALESCE(SUM(denomination), 0) AS v FROM bonds")
+        bonds = one("SELECT COUNT(*) AS c, COALESCE(SUM(denomination), 0) AS v FROM bonds")
         wins = one("SELECT COUNT(*) AS c, COALESCE(SUM(prize_amount), 0) AS s FROM wins")
+        open_wins = self.conn.execute(
+            "SELECT COUNT(*) AS c, COALESCE(SUM(prize_amount), 0) AS s FROM wins "
+            "WHERE claim_status <> ?", (FINAL_WIN_STATUS,)).fetchone()
+        repeat = one("SELECT COUNT(*) AS c FROM (SELECT 1 FROM wins WHERE bond_id IS NOT NULL "
+                     "GROUP BY bond_id HAVING COUNT(*) > 1)")
         copies = one("SELECT COUNT(*) AS c FROM copies")
-        # Numbers waiting in more than one bond (several copies): they win together.
-        shared = one("SELECT COUNT(*) AS c FROM (SELECT 1 FROM bonds WHERE status = 'active' "
+        # Numbers held in more than one bond (several copies): they win together.
+        shared = one("SELECT COUNT(*) AS c FROM (SELECT 1 FROM bonds "
                      "GROUP BY denomination, num HAVING COUNT(*) > 1)")
         by_denomination = self.query(
-            "SELECT denomination, COALESCE(SUM(status = 'active'), 0) AS active, "
-            "COALESCE(SUM(status = 'won'), 0) AS won, "
-            "COALESCE(SUM(CASE WHEN status = 'active' THEN denomination ELSE 0 END), 0) AS value "
-            "FROM bonds GROUP BY denomination ORDER BY denomination")
+            "SELECT b.denomination, COUNT(*) AS bonds, "
+            "COALESCE(SUM(EXISTS (SELECT 1 FROM wins x WHERE x.bond_id = b.id)), 0) AS won, "
+            "COALESCE(SUM(b.denomination), 0) AS value "
+            "FROM bonds b GROUP BY b.denomination ORDER BY b.denomination")
         return {
-            "active_count": active["c"], "active_value": active["v"],
-            "total_count": total["c"], "total_value": total["v"],
+            "bond_count": bonds["c"], "bond_value": bonds["v"],
             "win_count": wins["c"], "prize_total": wins["s"],
+            "unpaid_count": open_wins["c"], "unpaid_total": open_wins["s"],
+            "repeat_winners": repeat["c"],
             "pending_count": self.pending_count(), "copy_count": copies["c"],
             "shared_numbers": shared["c"],
             "by_denomination": by_denomination,

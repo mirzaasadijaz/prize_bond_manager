@@ -7,7 +7,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-SCHEMA_VERSION = 1
+from .lock import FileLock
+
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 -- A copy is one physical book/batch of bonds.  Bonds inside it keep a stable
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS draws (
     draw_date     TEXT NOT NULL,
     denomination  INTEGER,                    -- NULL = applies to every denomination
     label         TEXT,
+    location      TEXT,                       -- where the draw was held, e.g. Lahore
     created_at    TEXT NOT NULL
 );
 
@@ -77,7 +80,9 @@ CREATE TABLE IF NOT EXISTS pending_wins (
 CREATE INDEX IF NOT EXISTS ix_pending_status ON pending_wins(status);
 
 -- The final win list.  Copy details are stored as a snapshot so the report
--- survives later edits or deletion of the bond, copy or draw.
+-- survives later edits or deletion of the bond, copy or draw.  A bond stays in
+-- play after it wins, so one bond can have several rows here (other draws,
+-- other places, other dates).
 CREATE TABLE IF NOT EXISTS wins (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     bond_id            INTEGER REFERENCES bonds(id) ON DELETE SET NULL,
@@ -95,7 +100,11 @@ CREATE TABLE IF NOT EXISTS wins (
     position           INTEGER,
     copy_size          INTEGER,
     approved_at        TEXT NOT NULL,
-    UNIQUE (bond_id, draw_id)
+    location           TEXT,                      -- starts as the draw's location; editable
+    claim_status       TEXT NOT NULL DEFAULT 'Not claimed yet',
+    feedback           TEXT,                      -- free note: what the bank said, reference no ...
+    updated_at         TEXT,
+    UNIQUE (bond_id, draw_id)                     -- a bond can win again in another draw
 );
 CREATE INDEX IF NOT EXISTS ix_wins_date ON wins(draw_date);
 
@@ -130,28 +139,75 @@ def chunks(items: Sequence, size: int = 500) -> Iterator[Sequence]:
 class DatabaseCore:
     """Owns the connection.  Domain methods are added by the mixins."""
 
-    def __init__(self, path: str | Path = ":memory:"):
+    def __init__(self, path: str | Path = ":memory:", lock: bool = False):
+        """``lock=True`` keeps a second app window from opening the same file (raises
+        ``DatabaseInUseError``); the app uses it, tests and in-memory databases do not need it."""
         self.path = str(path)
+        self._lock: FileLock | None = None
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        # isolation_level=None -> autocommit; tx() issues BEGIN/COMMIT itself.
-        self.conn = sqlite3.connect(self.path, isolation_level=None)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self._depth = 0
-        self._migrate()
+            if lock:
+                self._lock = FileLock(self.path)
+        try:
+            # isolation_level=None -> autocommit; tx() issues BEGIN/COMMIT itself.
+            self.conn = sqlite3.connect(self.path, isolation_level=None)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            self._depth = 0
+            self._migrate()
+        except BaseException:
+            if self._lock:
+                self._lock.release()
+            raise
 
     # -- lifecycle -----------------------------------------------------
     def _migrate(self) -> None:
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if version > SCHEMA_VERSION:
             raise RuntimeError("This database was created by a newer version of the app.")
+        if version == SCHEMA_VERSION:
+            return
         if version < 1:
             self.conn.executescript(SCHEMA)
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            return
+        self._backup_before_upgrade()
+        with self.tx():                       # all or nothing
+            if version < 2:
+                self._upgrade_to_2()
+            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _backup_before_upgrade(self) -> None:
+        """Keep a copy of a data file as it was before its first upgrade."""
+        if self.path == ":memory:":
+            return
+        target = Path(self.path)
+        target = target.with_name(f"{target.name}.before-upgrade.bak")
+        if not target.exists():
+            self.backup_to(target)
+
+    def _upgrade_to_2(self) -> None:
+        """Version 2: location / status / feedback on wins, location on draws, and bonds that
+        stay in play after a win (a bond can win again, so none is marked 'won' any more)."""
+        for sql in (
+                "ALTER TABLE draws ADD COLUMN location TEXT",
+                "ALTER TABLE wins ADD COLUMN location TEXT",
+                "ALTER TABLE wins ADD COLUMN claim_status TEXT NOT NULL "
+                "DEFAULT 'Not claimed yet'",
+                "ALTER TABLE wins ADD COLUMN feedback TEXT",
+                "ALTER TABLE wins ADD COLUMN updated_at TEXT"):
+            self.conn.execute(sql)
+        back = self.conn.execute(
+            "UPDATE bonds SET status = 'active' WHERE status = 'won'").rowcount
+        self.log("Data file upgraded",
+                 "Wins now have location, status and feedback; bonds that already won take part "
+                 f"in every later draw ({back} bond(s) put back in play)")
 
     def close(self) -> None:
         self.conn.close()
+        if self._lock:
+            self._lock.release()
+            self._lock = None
 
     # -- transactions --------------------------------------------------
     @contextmanager

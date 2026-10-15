@@ -1,4 +1,4 @@
-"""My Bonds: the waiting list grouped by price, with filters, edit and delete."""
+"""My Bonds: every bond grouped by price, with filters, edit and delete."""
 from __future__ import annotations
 
 import re
@@ -14,18 +14,15 @@ from ..widgets import (PageHeader, TablePanel, button, confirm, dash, label, rep
                        thousands)
 from .base import BasePage
 
-STATUS_CHOICES = [("Waiting (active)", "active"), ("Drawn (won)", "won"), ("All bonds", None)]
+# A bond stays in play after it wins (it can win again), so "won" is a history, not a state.
+WON_CHOICES = [("All bonds", None), ("Bonds that have won", True), ("Bonds that never won", False)]
 
 
 def _status_text(value, row) -> str:
-    if row["status"] == "won":
-        return "Won (drawn)"
     return "Active - win pending" if row["pending_count"] else "Active"
 
 
 def _row_style(row):
-    if row["status"] == "won":
-        return theme.WON_TEXT, "#F1F5F9"
     if row["pending_count"]:
         return theme.WARNING_TEXT, theme.WARNING_BG
     return None
@@ -38,6 +35,8 @@ class BondsPage(BasePage):
             fmt=lambda v, r: f"{v:,}"),
         Col("purchase_date", "Purchased", 110, fmt=dash),
         Col("status", "Status", 150, fmt=_status_text),
+        Col("times_won", "Times won", 90, "right", numeric=True, export_raw=True,
+            fmt=lambda v, r: str(v) if v else "-"),
         same_number_col("same_count", single="-"),
         Col("copy_name", "Copy (book)", 140, fmt=dash),
         Col("position", "Position", 80, "right", numeric=True, export_raw=True,
@@ -53,7 +52,8 @@ class BondsPage(BasePage):
         header = PageHeader("My Bonds", "Your bonds grouped by price. Click a column heading to "
                             "sort; use the search box or the filters to narrow the list. The same "
                             "number can sit in several copies - the 'Same number' "
-                            "column shows it, and they all win together.")
+                            "column shows it, and they all win together. Bonds stay in every "
+                            "draw after a win; 'Times won' counts their wins.")
         self.add_button = header.add_action(button("Add bonds...", "primary"))
         self.import_button = header.add_action(button("Import file..."))
         self.edit_button = header.add_action(button("Edit"))
@@ -64,9 +64,9 @@ class BondsPage(BasePage):
         self.delete_button.clicked.connect(self._delete)
         self.root.addWidget(header)
 
-        self.status = QComboBox()
-        for text, value in STATUS_CHOICES:
-            self.status.addItem(text, value)
+        self.won = QComboBox()
+        for text, value in WON_CHOICES:
+            self.won.addItem(text, value)
         self.number_from, self.number_to = QLineEdit(), QLineEdit()
         self.date_from, self.date_to = QLineEdit(), QLineEdit()
         for edit, hint in ((self.number_from, "from"), (self.number_to, "to"),
@@ -82,13 +82,13 @@ class BondsPage(BasePage):
         apply.clicked.connect(self.refresh)
         clear = button("Clear filters")
         clear.clicked.connect(self._clear_filters)
-        self.status.currentIndexChanged.connect(self.refresh)
+        self.won.currentIndexChanged.connect(self.refresh)
 
         bar = QFrame()
         bar.setObjectName("Card")
         row = QHBoxLayout(bar)
         row.setContentsMargins(14, 10, 14, 10)
-        for widget in (label("Show", "muted"), self.status, label("Number", "muted"),
+        for widget in (label("Show", "muted"), self.won, label("Number", "muted"),
                        self.number_from, label("-", "muted"), self.number_to,
                        label("Purchased", "muted"), self.date_from, label("-", "muted"),
                        self.date_to, self.shared_only, apply, clear):
@@ -155,14 +155,14 @@ class BondsPage(BasePage):
         date_from, date_to = self._date(self.date_from), self._date(self.date_to)
         if date_from is False or date_to is False:
             return None
-        return {"status": self.status.currentData(), "number_from": self._number(self.number_from),
+        return {"won": self.won.currentData(), "number_from": self._number(self.number_from),
                 "number_to": self._number(self.number_to), "date_from": date_from,
                 "date_to": date_to}
 
     def _clear_filters(self) -> None:
         for edit in (self.number_from, self.number_to, self.date_from, self.date_to):
             edit.clear()
-        self.status.setCurrentIndex(0)
+        self.won.setCurrentIndex(0)
         self.shared_only.setChecked(False)
         self.refresh()
 
@@ -208,10 +208,11 @@ class BondsPage(BasePage):
         rows = panel.selected_rows() if panel else []
         if not rows:
             return
-        won = sum(1 for r in rows if r["status"] == "won")
+        won = sum(1 for r in rows if r["times_won"])
         text = f"Delete {len(rows):,} bond(s)? This cannot be undone."
         if won:
-            text += f"\n\n{won:,} of them have already been drawn; their win records stay in the Win List."
+            text += (f"\n\n{won:,} of them have won before; their win records stay in the Win "
+                     "List.")
         if not confirm(self, "Delete bonds", text, yes="Delete", danger=True):
             return
         removed = self.db.delete_bonds([r["id"] for r in rows])

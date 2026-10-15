@@ -7,15 +7,22 @@ from .core import now_iso
 
 
 class DrawsMixin:
-    def add_draw(self, draw_date: str, denomination: int | None, label: str = "") -> int:
-        """Create a draw.  ``denomination=None`` means it applies to every denomination."""
+    def add_draw(self, draw_date: str, denomination: int | None, label: str = "",
+                 location: str = "") -> int:
+        """Create a draw.  ``denomination=None`` means it applies to every denomination.
+
+        ``location`` is where the draw was held; wins found in this draw start with it.
+        """
         with self.tx():
             cur = self.conn.execute(
-                "INSERT INTO draws (draw_date, denomination, label, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (draw_date, denomination, (label or "").strip() or None, now_iso()))
+                "INSERT INTO draws (draw_date, denomination, label, location, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (draw_date, denomination, (label or "").strip() or None,
+                 (location or "").strip() or None, now_iso()))
             scope = f"Rs {denomination}" if denomination else "all denominations"
-            self.log("Draw recorded", f"{draw_date}, {scope}, {(label or '').strip()}".rstrip(", "))
+            place = (location or "").strip()
+            self.log("Draw recorded", ", ".join(
+                x for x in (draw_date, scope, (label or "").strip(), place) if x))
         return cur.lastrowid
 
     def get_draw(self, draw_id: int) -> dict | None:
@@ -25,7 +32,7 @@ class DrawsMixin:
     def list_draws(self) -> list[dict]:
         return self.query(
             """
-            SELECT d.id, d.draw_date, d.denomination, d.label, d.created_at,
+            SELECT d.id, d.draw_date, d.denomination, d.label, d.location, d.created_at,
                    (SELECT COUNT(*) FROM winning_numbers w WHERE w.draw_id = d.id) AS numbers,
                    (SELECT COUNT(*) FROM pending_wins p
                      WHERE p.draw_id = d.id AND p.status = 'pending') AS pending,

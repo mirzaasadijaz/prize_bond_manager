@@ -18,14 +18,15 @@ def _total_style(row):
 class DashboardPage(BasePage):
     HOLDINGS = [
         Col("price", "Price", 110, "left"),
-        Col("active", "Waiting bonds", 120, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
-        Col("won", "Drawn", 90, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
-        Col("value", "Value waiting (Rs)", 150, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
+        Col("bonds", "Bonds", 90, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
+        Col("won", "Have won", 100, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
+        Col("value", "Value (Rs)", 130, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
     ]
     RECENT = [
         Col("draw_date", "Draw date", 100),
         Col("bond_number", "Bond", 90),
         Col("denomination", "Price", 80, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
+        Col("claim_status", "Status", 120),
         Col("copy", "Copy (book)", 110),
         Col("where", "Position", 100),
         same_number_col(single="-"),
@@ -48,8 +49,8 @@ class DashboardPage(BasePage):
 
         cards = QHBoxLayout()
         cards.setSpacing(14)
-        self.card_active = StatCard("Active bonds")
-        self.card_value = StatCard("Investment value (active bonds)")
+        self.card_active = StatCard("My bonds")
+        self.card_value = StatCard("Investment value")
         self.card_wins = StatCard("Wins so far")
         self.card_pending = StatCard("Waiting for your approval")
         for card in (self.card_active, self.card_value, self.card_wins, self.card_pending):
@@ -93,26 +94,29 @@ class DashboardPage(BasePage):
         stats = self.db.dashboard_stats()
         copies = stats["copy_count"]
         shared = stats["shared_numbers"]
-        sub = f"in {copies:,} copy/copies" if copies else "waiting for a draw"
+        sub = f"in {copies:,} copy/copies" if copies else "all take part in every draw"
         if shared:
             sub += f" - {shared:,} number(s) held more than once"
-        self.card_active.set(f"{stats['active_count']:,}", sub)
-        self.card_value.set(money(stats["active_value"]),
-                            f"{money(stats['total_value'])} incl. drawn bonds")
+        self.card_active.set(f"{stats['bond_count']:,}", sub)
+        self.card_value.set(money(stats["bond_value"]), "face value of all your bonds")
         prize = f"prizes {money(stats['prize_total'])}" if stats["prize_total"] else "approved wins"
+        if stats["win_count"]:
+            prize += f" - {stats['unpaid_count']:,} not paid yet"
+            if stats["repeat_winners"]:
+                prize += f", {stats['repeat_winners']:,} bond(s) won more than once"
         self.card_wins.set(f"{stats['win_count']:,}", prize)
         pending = stats["pending_count"]
         self.card_pending.set(f"{pending:,}", "open Pending Wins to review" if pending
                               else "nothing to review")
         self.banner.setVisible(bool(pending))
         self.banner_text.setText(f"{pending:,} possible win(s) found by the agent - nothing is "
-                                 "moved until you approve them.")
+                                 "recorded until you approve them.")
 
-        rows = [{"price": money(d["denomination"]), "active": d["active"], "won": d["won"],
+        rows = [{"price": money(d["denomination"]), "bonds": d["bonds"], "won": d["won"],
                  "value": d["value"]} for d in stats["by_denomination"]]
         if rows:
-            rows.append({"price": "Total", "active": stats["active_count"],
-                         "won": sum(r["won"] for r in rows), "value": stats["active_value"],
+            rows.append({"price": "Total", "bonds": stats["bond_count"],
+                         "won": sum(r["won"] for r in rows), "value": stats["bond_value"],
                          "is_total": True})
         self.holdings.set_rows(rows)
         self.recent.set_rows([
