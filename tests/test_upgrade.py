@@ -210,8 +210,8 @@ def test_upgraded_and_new_files_end_up_with_the_same_columns(v2_file, tmp_path):
     fresh.close()
 
 
-def test_a_version_1_file_goes_all_the_way_to_version_3(old_file):
+def test_a_version_1_file_goes_all_the_way_to_the_current_version(old_file):
     db = Database(old_file)
-    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert db.list_sales() == [] and db.list_draws()[0]["source"] == "Manual"
     db.close()

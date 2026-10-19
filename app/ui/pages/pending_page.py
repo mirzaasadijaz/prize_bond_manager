@@ -140,7 +140,7 @@ class PendingPage(BasePage):
                                 "This win is still waiting for your approval.")
 
     def _approve(self, rows: list[dict]) -> None:
-        if not rows:
+        if not rows or not self.ctx.guard(self, "approve wins"):
             return
         chosen = [r["pending_id"] for r in rows]
         # Bonds in other copies holding the same winning number win too.
@@ -172,6 +172,8 @@ class PendingPage(BasePage):
 
     def _reject(self) -> None:
         rows = self.panel.selected_rows()
+        if rows and not self.ctx.guard(self, "reject matches"):
+            return
         if rows and confirm(
                 self, "Reject matches",
                 f"Reject {len(rows):,} match(es)?\n\nThe bonds stay in your list and will "
@@ -184,6 +186,6 @@ class PendingPage(BasePage):
 
     def _restore(self) -> None:
         rows = self.panel.selected_rows()
-        if rows:
+        if rows and self.ctx.guard(self, "restore matches"):
             self.agent.restore([r["pending_id"] for r in rows])
             self.ctx.changed()

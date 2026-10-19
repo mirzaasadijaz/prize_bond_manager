@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QFormLayout, QHBoxLayout, QLine
                              QVBoxLayout)
 
 from ...db import CopyNameError
-from .. import theme
 from ..context import AppContext
+from ..highlight import bond_row_style
 from ..table_model import Col, same_number_col
 from ..widgets import TablePanel, button, label, thousands, warn
 from .common import LocationField
@@ -64,12 +64,7 @@ def _status(value, row) -> str:
     return f"Won {row['times_won']}x" if row["times_won"] else "-"
 
 
-def _style(row):
-    if row["sale_id"] is not None:
-        return theme.MUTED, None
-    if row["pending_count"]:
-        return theme.WARNING_TEXT, theme.WARNING_BG
-    return None
+_style = bond_row_style
 
 
 class CopyContentsDialog(QDialog):

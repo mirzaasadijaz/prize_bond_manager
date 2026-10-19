@@ -99,12 +99,16 @@ class SalesPage(BasePage):
 
     def _edit(self) -> None:
         sale = self._selected()
+        if sale and not self.ctx.guard(self, "edit this sale"):
+            return
         if sale and EditSaleDialog(self.ctx, sale["id"], self).exec():
             self.ctx.changed()
 
     def _undo(self) -> None:
         rows = self.panel.selected_rows()
         if not rows:
+            return
+        if not self.ctx.guard(self, "undo the sale"):
             return
         bonds = sum(r["bonds"] for r in rows)
         if not confirm(self, "Undo sale",

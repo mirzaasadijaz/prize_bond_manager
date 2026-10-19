@@ -13,12 +13,19 @@ from .core import KEEP, chunks, now_iso  # noqa: F401  (KEEP is re-used by calle
 # all win.  A bond that has already won still takes part in every later draw.
 # A bond you sold takes part only in the draws held *before* the sale date: from the sale
 # date on it belongs to the buyer.
+# A bond bought *after* a draw was not yours on that day, so that draw is skipped, and so are
+# the draws held on or before the date its last prize was taken (``last_prize_date``).
+# Bonds without those dates are never skipped for them.
 MATCH_FROM = """
 FROM winning_numbers w
 JOIN draws d ON d.id = w.draw_id
 JOIN bonds b ON b.num = w.num
              AND (d.denomination IS NULL OR b.denomination = d.denomination)
              AND (b.sale_id IS NULL OR d.draw_date < b.sold_date)
+             AND (b.purchase_date IS NULL OR b.purchase_date = ''
+                  OR b.purchase_date <= d.draw_date)
+             AND (b.last_prize_date IS NULL OR b.last_prize_date = ''
+                  OR d.draw_date > b.last_prize_date)
 WHERE (:draw_id IS NULL OR w.draw_id = :draw_id)
 """
 
@@ -26,7 +33,7 @@ PENDING_SELECT = """
 SELECT p.id AS pending_id, p.status AS pending_status, p.found_at, p.resolved_at, p.note,
        b.id AS bond_id, b.number AS bond_number, b.num AS bond_num, b.denomination,
        b.purchase_date, b.position, b.status AS bond_status, b.location AS bond_location,
-       b.sale_id, b.sold_date, sl.buyer AS sold_to,
+       b.sale_id, b.sold_date, b.last_prize_date, sl.buyer AS sold_to,
        c.id AS copy_id, c.name AS copy_name, c.first_number AS copy_first_number,
        c.size AS copy_size,
        d.id AS draw_id, d.draw_date, d.label AS draw_label, d.location AS draw_location,
@@ -158,6 +165,10 @@ class WinsMixin:
                     reason = "The bond's denomination no longer matches the draw."
                 elif row["sale_id"] is not None and row["sold_date"] <= row["draw_date"]:
                     reason = "The bond was sold on or before the draw date."
+                elif row["warning"]:
+                    reason = "The bond was bought after the draw date."
+                elif row["last_prize_date"] and row["last_prize_date"] >= row["draw_date"]:
+                    reason = "The draw is not newer than the date its last prize was taken."
                 if reason:
                     self.conn.execute(
                         "UPDATE pending_wins SET status = 'rejected', resolved_at = ?, note = ? "

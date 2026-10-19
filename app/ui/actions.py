@@ -16,12 +16,16 @@ from .widgets import info, last_dir, pick_save_file, remember_dir, warn
 
 
 def add_bonds(ctx: AppContext, parent, start_tab: int = 0) -> None:
+    if not ctx.guard(parent, "add bonds"):
+        return
     dialog = AddBondsDialog(ctx, parent, start_tab)
     if dialog.exec() and dialog.result:
         ctx.after_bonds_added(parent, dialog.result, "Bonds added")
 
 
 def import_file(ctx: AppContext, parent, path: str | None = None) -> None:
+    if not ctx.guard(parent, "import bonds"):
+        return
     dialog = ImportDialog(ctx, parent, path)
     if dialog.exec() and dialog.result:
         ctx.after_bonds_added(parent, dialog.result, "Import finished")

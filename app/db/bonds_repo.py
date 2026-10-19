@@ -30,6 +30,7 @@ BOND_SELECT = """
 SELECT b.id, b.number, b.num, b.denomination, b.purchase_date, b.status,
        b.copy_id, b.position, b.created_at, b.location,
        b.sale_id, b.sold_date, sl.buyer AS sold_to,
+       b.last_prize_date, b.highlight, c.highlight AS copy_highlight,
        c.name AS copy_name, c.first_number AS copy_first_number, c.size AS copy_size,
        c.location AS copy_location,
        COALESCE(pw.cnt, 0) AS pending_count,
@@ -290,7 +291,7 @@ class BondsMixin:
     # ------------------------------------------------- edit / delete bonds
     def update_bond(self, bond_id: int, number, denomination: int,
                     purchase_date: str | None, copy_id: int | None,
-                    position: int | None, location=KEEP) -> None:
+                    position: int | None, location=KEEP, last_prize_date=KEEP) -> None:
         bond = self.get_bond(bond_id)
         if bond is None:
             raise ValueError("That bond no longer exists.")
@@ -327,6 +328,10 @@ class BondsMixin:
             if location is not KEEP:
                 self.conn.execute("UPDATE bonds SET location = ? WHERE id = ?",
                                   ((location or "").strip() or None, bond_id))
+            if last_prize_date is not KEEP:
+                self.conn.execute("UPDATE bonds SET last_prize_date = ? WHERE id = ?",
+                                  (last_prize_date or None, bond_id))
+            self._drop_skipped_pending(bond_id)
             if copy_id is not None:
                 self.conn.execute("UPDATE copies SET size = MAX(size, ?) WHERE id = ?",
                                   (position, copy_id))
@@ -334,6 +339,33 @@ class BondsMixin:
                     self.conn.execute("UPDATE copies SET first_number = ? WHERE id = ?",
                                       (display, copy_id))
             self.log("Bond edited", f"{display} (Rs {denomination})")
+
+    def _drop_skipped_pending(self, bond_id: int) -> None:
+        """Waiting matches of a draw the bond no longer takes part in (it was bought after the
+        draw, or the draw is not newer than the date its last prize was taken) are removed."""
+        self.conn.execute(
+            "DELETE FROM pending_wins WHERE status = 'pending' AND bond_id = ? AND draw_id IN ("
+            "SELECT d.id FROM draws d JOIN bonds b ON b.id = ? WHERE "
+            "(b.purchase_date IS NOT NULL AND b.purchase_date <> '' "
+            " AND b.purchase_date > d.draw_date) "
+            "OR (b.last_prize_date IS NOT NULL AND b.last_prize_date <> '' "
+            " AND d.draw_date <= b.last_prize_date))", (bond_id, bond_id))
+
+    def set_highlight(self, kind: str, ids: Sequence[int], colour: str | None) -> int:
+        """Give bonds (``kind='bonds'``) or copies (``kind='copies'``) a colour, ``#RRGGBB``;
+        ``None`` takes the colour away again."""
+        if kind not in ("bonds", "copies"):
+            raise ValueError("kind must be 'bonds' or 'copies'")
+        if colour is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}", colour):
+            raise ValueError("The colour must look like #FDE68A.")
+        changed = 0
+        with self.tx():
+            for part in chunks(list(ids), 500):
+                marks = ",".join("?" * len(part))
+                changed += self.conn.execute(
+                    f"UPDATE {kind} SET highlight = ? WHERE id IN ({marks})",
+                    (colour, *part)).rowcount
+        return changed
 
     def delete_bonds(self, ids: Sequence[int]) -> int:
         removed = 0
@@ -351,6 +383,7 @@ class BondsMixin:
         return self.query(
             """
             SELECT c.id, c.name, c.first_number, c.size, c.note, c.location, c.created_at,
+                   c.highlight,
                    COALESCE(SUM(b.sale_id IS NULL), 0) AS bonds,
                    COALESCE(SUM(b.sale_id IS NOT NULL), 0) AS sold,
                    COALESCE(SUM(EXISTS (SELECT 1 FROM wins x WHERE x.bond_id = b.id)), 0) AS won,

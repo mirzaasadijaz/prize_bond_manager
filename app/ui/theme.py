@@ -20,6 +20,17 @@ WARNING_TEXT = "#92400E"
 SUCCESS_BG = "#DCFCE7"
 SUCCESS_TEXT = "#166534"
 WON_TEXT = "#64748B"
+WON_ROW_BG = "#BBF7D0"          # rows of bonds / copies that have already won
+WON_ROW_TEXT = "#14532D"
+
+
+def readable_on(background: str) -> str:
+    """Black or white text, whichever is easier to read on the ``#RRGGBB`` background."""
+    try:
+        red, green, blue = (int(background[i:i + 2], 16) for i in (1, 3, 5))
+    except (ValueError, IndexError):
+        return TEXT
+    return "#0F172A" if (0.299 * red + 0.587 * green + 0.114 * blue) > 150 else "#FFFFFF"
 
 STYLESHEET = f"""
 * {{
@@ -111,13 +122,19 @@ QScrollBar:horizontal {{ background: transparent; height: 11px; margin: 0; }}
 QScrollBar::handle:horizontal {{ background: #CBD5E1; border-radius: 5px; min-width: 28px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 
-QMenuBar {{ background: {SURFACE}; border-bottom: 1px solid {BORDER}; }}
-QMenuBar::item {{ padding: 6px 12px; background: transparent; }}
-QMenuBar::item:selected {{ background: #F1F5F9; }}
-QMenu {{ background: {SURFACE}; border: 1px solid {BORDER_STRONG}; padding: 4px; }}
-QMenu::item {{ padding: 6px 24px; border-radius: 4px; }}
+QMenuBar {{ background: {SIDEBAR_BG}; color: {SIDEBAR_TEXT}; border-bottom: 1px solid {SIDEBAR_HOVER}; }}
+QMenuBar::item {{ padding: 6px 12px; background: transparent; color: {SIDEBAR_TEXT}; }}
+QMenuBar::item:selected {{ background: {SIDEBAR_HOVER}; color: white; }}
+QMenuBar::item:pressed {{ background: {SIDEBAR_HOVER}; color: white; }}
+QMenu {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER_STRONG}; padding: 4px; }}
+QMenu::item {{ padding: 6px 24px; border-radius: 4px; color: {TEXT}; }}
 QMenu::item:selected {{ background: {PRIMARY_SOFT}; color: {TEXT}; }}
-QStatusBar {{ background: {SURFACE}; border-top: 1px solid {BORDER}; color: {MUTED}; }}
+QMenu::item:disabled {{ color: #94A3B8; }}
+QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
+QStatusBar {{ background: {SIDEBAR_BG}; border-top: 1px solid {SIDEBAR_HOVER}; color: {SIDEBAR_TEXT}; }}
+QStatusBar::item {{ border: none; }}
+QStatusBar QLabel {{ color: {SIDEBAR_TEXT}; background: transparent; }}
+QSizeGrip {{ background: transparent; }}
 QToolTip {{ background: {TEXT}; color: white; border: none; padding: 5px 8px; }}
 QTextBrowser {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QSplitter::handle {{ background: transparent; }}

@@ -105,7 +105,8 @@ class WinningIndex:
 def check_bonds(index: WinningIndex,
                 bonds: Iterable[tuple[object, int | None, str | None]],
                 default_denomination: int | None = None,
-                owned_at: dict[int, str] | None = None) -> CheckSummary:
+                owned_at: dict[int, str] | None = None,
+                limits: dict[int, tuple[str | None, str | None]] | None = None) -> CheckSummary:
     """Check ``(number, price, ref)`` tuples.  ``price`` / ``ref`` may be None.
 
     Numbers that cannot be read are listed in ``invalid`` and the rest is still checked.
@@ -127,6 +128,12 @@ def check_bonds(index: WinningIndex,
             sold = owned_at.get(position)
             if sold:
                 rows = [r for r in rows if r.draw_date < sold]
+        if limits is not None:                        # (bought on, last prize taken on)
+            bought, taken = limits.get(position, (None, None))
+            if bought:                                # bought after the draw: not yours then
+                rows = [r for r in rows if r.draw_date >= bought]
+            if taken:                                 # only draws newer than the last prize
+                rows = [r for r in rows if r.draw_date > taken]
         if rows:
             summary.winners += 1
             summary.hits += [Hit(display, key, price, ref, row) for row in rows]
@@ -146,13 +153,26 @@ def open_readonly(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def _held_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(bonds)")}
+    prize = "b.last_prize_date" if "last_prize_date" in columns else "NULL"   # older data file
+    return conn.execute(
+        f"SELECT b.number, b.denomination, b.sold_date, b.purchase_date, {prize} AS last_prize, "
+        "c.name AS copy, b.position "
+        "FROM bonds b LEFT JOIN copies c ON c.id = b.copy_id "
+        "ORDER BY b.denomination, b.num").fetchall()
+
+
 def held_bonds(conn: sqlite3.Connection) -> list[tuple[str, int, str, str | None]]:
     """The bonds you hold: ``(number, price, ref, sold_date)`` (sold bonds carry the sale date;
     they still count for draws held before it)."""
-    rows = conn.execute(
-        "SELECT b.number, b.denomination, b.sold_date, c.name AS copy, b.position "
-        "FROM bonds b LEFT JOIN copies c ON c.id = b.copy_id "
-        "ORDER BY b.denomination, b.num").fetchall()
     return [(r["number"], r["denomination"],
              (f"{r['copy']} #{r['position']}" if r["copy"] and r["position"] else r["copy"] or ""),
-             r["sold_date"]) for r in rows]
+             r["sold_date"]) for r in _held_rows(conn)]
+
+
+def held_limits(conn: sqlite3.Connection) -> dict[int, tuple[str | None, str | None]]:
+    """For the bonds of :func:`held_bonds` (same order): ``(date bought, date the last prize was
+    taken)``.  Draws before the first and on or before the second are skipped."""
+    return {i: (r["purchase_date"] or None, r["last_prize"] or None)
+            for i, r in enumerate(_held_rows(conn)) if r["purchase_date"] or r["last_prize"]}

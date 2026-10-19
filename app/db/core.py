@@ -9,7 +9,7 @@ from typing import Iterable, Iterator, Sequence
 
 from .lock import FileLock
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 KEEP = object()        # "leave this field as it is" for the update_* methods
 
@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS copies (
     size          INTEGER NOT NULL DEFAULT 0, -- number of positions in the copy
     note          TEXT,
     location      TEXT,                       -- optional: where the copy is kept / was bought
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    highlight     TEXT                        -- optional row colour chosen by the user, e.g. #FDE68A
 );
 
 -- A sale: one or more bonds sold to somebody.  The bonds stay in their copy (with their
@@ -54,7 +55,9 @@ CREATE TABLE IF NOT EXISTS bonds (
     created_at    TEXT NOT NULL,
     location      TEXT,                       -- optional: where this bond is kept
     sale_id       INTEGER REFERENCES sales(id) ON DELETE SET NULL,  -- set once it is sold
-    sold_date     TEXT                        -- copy of the sale date (draws before it are yours)
+    sold_date     TEXT,                       -- copy of the sale date (draws before it are yours)
+    last_prize_date TEXT,                     -- optional: date the last prize of this bond was taken
+    highlight     TEXT                        -- optional row colour chosen by the user, e.g. #FDE68A
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_bonds_copy_position
     ON bonds(copy_id, position) WHERE copy_id IS NOT NULL;
@@ -221,6 +224,8 @@ class DatabaseCore:
                 self._upgrade_to_2()
             if version < 3:
                 self._upgrade_to_3()
+            if version < 4:
+                self._upgrade_to_4()
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _backup_before_upgrade(self) -> None:
@@ -285,6 +290,17 @@ class DatabaseCore:
         self.log("Data file upgraded",
                  "Bonds and copies can have a location, bonds can be sold (Sales page) and "
                  f"draws remember where their numbers came from ({marked} draw(s) marked 'Manual')")
+
+    def _upgrade_to_4(self) -> None:
+        """Version 4: the date a bond's last prize was taken, and a colour the user can give to
+        any bond or copy."""
+        for sql in (
+                "ALTER TABLE bonds ADD COLUMN last_prize_date TEXT",
+                "ALTER TABLE bonds ADD COLUMN highlight TEXT",
+                "ALTER TABLE copies ADD COLUMN highlight TEXT"):
+            self.conn.execute(sql)
+        self.log("Data file upgraded",
+                 "Bonds have a 'last prize taken' date, and bonds and copies can be highlighted")
 
     def close(self) -> None:
         self.conn.close()

@@ -29,6 +29,12 @@ class AppContext(QObject):
     def changed(self) -> None:
         self.data_changed.emit()
 
+    def guard(self, parent, what: str) -> bool:
+        """Ask for the PIN (when one is set) before something is edited or deleted.
+        ``what`` finishes 'Enter your PIN to ...'.  False means: do not go on."""
+        from .security import ask_pin
+        return ask_pin(parent, self, what)
+
     # -- agent ---------------------------------------------------------------
     def run_agent(self, trigger: str, draw_id: int | None = None,
                   force: bool = False) -> ScanResult | None:

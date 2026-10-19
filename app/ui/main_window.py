@@ -142,6 +142,8 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "Back up database...",
                      lambda: actions.backup_database(self.ctx, self))
         file_menu.addSeparator()
+        self._action(file_menu, "PIN / password...", self.open_pin)
+        file_menu.addSeparator()
         self._action(file_menu, "Quit", self.close, "Ctrl+Q")
 
         agent_menu = bar.addMenu("&Agent")
@@ -159,6 +161,10 @@ class MainWindow(QMainWindow):
 
         help_menu = bar.addMenu("&Help")
         self._action(help_menu, "About", self._about)
+
+    def open_pin(self) -> None:
+        from .security import PinDialog
+        PinDialog(self.ctx, self).exec()
 
     def open_online(self) -> None:
         OnlineDrawsDialog(self.ctx, self).exec()

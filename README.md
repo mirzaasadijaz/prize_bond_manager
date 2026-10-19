@@ -336,6 +336,23 @@ without a restart, and listens on `127.0.0.1` only unless you pass `--host` **an
 (`Authorization: Bearer <token>`). Measured here: 10,000 bonds matched in about 10 ms; a complete
 `POST` of 10,000 bonds over real HTTP took about 60 ms (see `tests/test_api.py`).
 
+### Which draws count for a bond, colours and the PIN
+
+* **Bought after the draw.** A bond whose date of purchase is later than the draw date is not
+  checked for that draw (a bond with no purchase date is always checked).
+* **Last prize taken on.** Edit a bond and fill in the day you last took a prize for it. Draws held
+  on or before that day are skipped for it; newer draws are checked. Leave it empty to check all.
+  The bond list has a column for it. Changing either date removes waiting matches that no longer
+  apply, and the local API follows the same two rules.
+* **Colours.** Rows of bonds and copies that have already won are green. *Highlight* gives the
+  selected rows a colour of your choice (ready colours, any colour, or remove). A colour on a copy
+  also shows on its bonds. Order: sold (grey), your colour, win waiting (amber), already won (green).
+* **PIN / password** (File menu). With a PIN set, the program asks for it before anything is edited
+  or deleted, and before bonds are added or imported, wins are approved / rejected / restored and rows are
+  highlighted: bonds, copies, draws and winning numbers, sales, win details. Only a salted hash is
+  stored. Three wrong PINs in a row lock the question for 30 seconds. It protects the screens, it
+  does not encrypt the data file. Forgot it: `python main.py --reset-pin` removes it.
+
 ### Win report
 
 Each winning number shows draw, prize and, when several bonds hold it, a line such as

@@ -6,9 +6,10 @@ from datetime import datetime
 
 from PyQt6.QtWidgets import QCheckBox, QComboBox, QFrame, QHBoxLayout, QLineEdit, QTabWidget
 
-from .. import actions, theme
+from .. import actions
 from ..context import AppContext
 from ..dialogs.edit_bond import EditBondDialog
+from ..highlight import bond_row_style, highlight_button
 from ..table_model import Col, same_number_col
 from ..widgets import (PageHeader, TablePanel, button, confirm, dash, label, repolish,
                        thousands)
@@ -28,20 +29,13 @@ def _status_text(value, row) -> str:
     return "Active - win pending" if row["pending_count"] else "Active"
 
 
-def _row_style(row):
-    if row["sale_id"] is not None:
-        return theme.MUTED, None
-    if row["pending_count"]:
-        return theme.WARNING_TEXT, theme.WARNING_BG
-    return None
-
-
 class BondsPage(BasePage):
     COLUMNS = [
         Col("number", "Bond number", 120, sort_key="num"),
         Col("denomination", "Price (Rs)", 100, "right", numeric=True, export_raw=True,
             fmt=lambda v, r: f"{v:,}"),
         Col("purchase_date", "Purchased", 110, fmt=dash),
+        Col("last_prize_date", "Last prize taken", 120, fmt=dash),
         Col("status", "Status", 240, fmt=_status_text),
         Col("location", "Location", 130, fmt=dash),
         Col("times_won", "Times won", 90, "right", numeric=True, export_raw=True,
@@ -59,7 +53,8 @@ class BondsPage(BasePage):
         self._keys: list[int | None] = []
 
         header = PageHeader("My Bonds", "Your bonds grouped by price. Click a column heading to "
-                            "sort; use the search box or the filters to narrow the list. The same "
+                            "sort; use the search box or the filters to narrow the list. Green rows "
+                            "have already won; 'Highlight' gives rows a colour of your own. The same "
                             "number can sit in several copies - the 'Same number' "
                             "column shows it, and they all win together. Bonds stay in every "
                             "draw after a win; 'Times won' counts their wins.")
@@ -68,6 +63,7 @@ class BondsPage(BasePage):
         self.sell_button = header.add_action(button("Sell selected...",
                                                     tooltip="Record that the selected bonds were "
                                                             "sold to somebody"))
+        self.highlight_button = header.add_action(highlight_button(self, self._highlight))
         self.edit_button = header.add_action(button("Edit"))
         self.delete_button = header.add_action(button("Delete", "danger"))
         self.add_button.clicked.connect(lambda: actions.add_bonds(self.ctx, self))
@@ -123,7 +119,7 @@ class BondsPage(BasePage):
     def _make_panel(self, key: int | None) -> TablePanel:
         name = "all_bonds" if key is None else f"bonds_rs_{key}"
         panel = TablePanel(self.COLUMNS, export_name=name, sheet_name="Bonds" if key is None
-                           else f"Rs {key}", row_style=_row_style,
+                           else f"Rs {key}", row_style=bond_row_style,
                            placeholder="Search bond number, copy, date ...",
                            empty_text="No bonds to show here.\nUse 'Add bonds...' or "
                                       "'Import file...' to get started.")
@@ -212,6 +208,7 @@ class BondsPage(BasePage):
         panel = self._current_panel()
         rows = panel.selected_rows() if panel else []
         self.edit_button.setEnabled(len(rows) == 1)
+        self.highlight_button.setEnabled(bool(rows))
         self.delete_button.setEnabled(bool(rows))
         self.sell_button.setEnabled(bool(rows) and all(r["sale_id"] is None for r in rows))
 
@@ -221,9 +218,18 @@ class BondsPage(BasePage):
         rows = panel.selected_rows() if panel else []
         if len(rows) != 1:
             return
+        if not self.ctx.guard(self, "edit this bond"):
+            return
         if EditBondDialog(self.ctx, rows[0]["id"], self).exec():
             self.ctx.changed()
             self.ctx.offer_review(self, self.ctx.run_agent("bonds"))
+
+    def _highlight(self, colour) -> None:
+        panel = self._current_panel()
+        rows = panel.selected_rows() if panel else []
+        if rows and self.ctx.guard(self, "change the colour"):
+            self.db.set_highlight("bonds", [r["id"] for r in rows], colour)
+            self.ctx.changed()
 
     def _sell(self) -> None:
         panel = self._current_panel()
@@ -235,6 +241,8 @@ class BondsPage(BasePage):
         panel = self._current_panel()
         rows = panel.selected_rows() if panel else []
         if not rows:
+            return
+        if not self.ctx.guard(self, "delete bonds"):
             return
         won = sum(1 for r in rows if r["times_won"])
         text = f"Delete {len(rows):,} bond(s)? This cannot be undone."

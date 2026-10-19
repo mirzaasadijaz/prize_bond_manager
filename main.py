@@ -22,7 +22,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--token", default=None,
                         help="with --serve: require 'Authorization: Bearer <token>' "
                              "(needed when --host is not this computer)")
+    parser.add_argument("--reset-pin", action="store_true",
+                        help="forgot the PIN? take it away (editing and deleting stop asking), "
+                             "then exit")
     args = parser.parse_args(argv)
+
+    if args.reset_pin:
+        from app.config import resolve_db_path
+        from app.db import Database
+        db = Database(resolve_db_path(args.db))
+        db.clear_pin()
+        db.close()
+        print("The PIN is removed.")
+        return 0
 
     if args.serve:                    # no window: Qt is not even imported
         from app.api.server import run

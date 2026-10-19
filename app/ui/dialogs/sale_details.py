@@ -157,6 +157,8 @@ class SaleDetailsDialog(QDialog):
         self.ctx.offer_review(self.parentWidget() or self, result)
 
     def _edit(self) -> None:
+        if not self.ctx.guard(self, "edit this sale"):
+            return
         if EditSaleDialog(self.ctx, self.sale_id, self).exec():
             self.changed = True
             self.ctx.changed()
@@ -165,6 +167,8 @@ class SaleDetailsDialog(QDialog):
     def _take_back(self) -> None:
         rows = self.table.selected_rows()
         if not rows:
+            return
+        if not self.ctx.guard(self, "take these bonds back"):
             return
         everything = len(rows) == len(self.table.all_rows())
         text = (f"Take back {len(rows):,} bond(s)? They become yours again and take part in every "
@@ -177,6 +181,8 @@ class SaleDetailsDialog(QDialog):
         self._after_change(f"{back:,} bond(s) taken back.")
 
     def _undo(self) -> None:
+        if not self.ctx.guard(self, "undo the sale"):
+            return
         if not confirm(self, "Undo sale",
                        "Undo this whole sale? All of its bonds become yours again and the sale "
                        "record is removed.", yes="Undo sale", danger=True):

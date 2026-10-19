@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import QMessageBox
 from .. import actions
 from ..context import AppContext
 from ..dialogs.copy_dialogs import CopyContentsDialog, EditCopyDialog
+from ..highlight import copy_row_style, highlight_button
 from ..table_model import Col
 from ..widgets import PageHeader, TablePanel, button, dash, thousands
 from .base import BasePage
@@ -46,6 +47,7 @@ class CopiesPage(BasePage):
         self.sell_button = header.add_action(button("Sell copy...",
                                                     tooltip="Sell the bonds of the selected copy "
                                                             "(or some of them)"))
+        self.highlight_button = header.add_action(highlight_button(self, self._highlight))
         self.rename_button = header.add_action(button("Edit"))
         self.delete_button = header.add_action(button("Delete", "danger"))
         self.add_button.clicked.connect(lambda: actions.add_bonds(self.ctx, self, 0))
@@ -56,6 +58,7 @@ class CopiesPage(BasePage):
         self.root.addWidget(header)
 
         self.panel = TablePanel(self.COLUMNS, export_name="copies", sheet_name="Copies",
+                                row_style=copy_row_style,
                                 placeholder="Search copies ...",
                                 empty_text="No copies yet.\nClick 'Add copies...' to create a book "
                                            "or batch of bonds.")
@@ -81,6 +84,7 @@ class CopiesPage(BasePage):
         copy = self._selected()
         self.sell_button.setEnabled(bool(copy and copy["bonds"]))
         self.delete_button.setEnabled(bool(self.panel.selected_rows()))
+        self.highlight_button.setEnabled(bool(self.panel.selected_rows()))
 
     def _view(self) -> None:
         copy = self._selected()
@@ -95,14 +99,24 @@ class CopiesPage(BasePage):
         if bonds:
             actions.sell_bonds(self.ctx, self, bonds)
 
+    def _highlight(self, colour) -> None:
+        rows = self.panel.selected_rows()
+        if rows and self.ctx.guard(self, "change the colour"):
+            self.db.set_highlight("copies", [r["id"] for r in rows], colour)
+            self.ctx.changed()
+
     def _rename(self) -> None:
         copy = self._selected()
+        if copy and not self.ctx.guard(self, "edit this copy"):
+            return
         if copy and EditCopyDialog(self.ctx, copy["id"], self).exec():
             self.ctx.changed()
 
     def _delete(self) -> None:
         rows = self.panel.selected_rows()
         if not rows:
+            return
+        if not self.ctx.guard(self, "delete copies"):
             return
         names = ", ".join(r["name"] for r in rows[:3]) + (" ..." if len(rows) > 3 else "")
         bonds = sum(r["bonds"] for r in rows)

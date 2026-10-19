@@ -15,7 +15,7 @@ import secrets
 import threading
 from pathlib import Path
 
-from .checker import WinningIndex, check_bonds, held_bonds, open_readonly
+from .checker import WinningIndex, check_bonds, held_bonds, held_limits, open_readonly
 from .schemas import (MAX_BONDS, CheckRequest, CheckResponse, DrawOut, Health, InvalidBond,
                       WinOut)
 
@@ -114,9 +114,11 @@ def create_app(db_path: str | Path, token: str | None = None):
         """Every bond in the data file against the recorded draws (what the agent does)."""
         with store.lock:
             bonds = held_bonds(store.conn)
+            limits = held_limits(store.conn)
         index = store.index(draw_ids)
         summary = check_bonds(index, ((n, d, r) for n, d, r, _ in bonds),
-                              owned_at={i: s for i, (_, _, _, s) in enumerate(bonds) if s})
+                              owned_at={i: s for i, (_, _, _, s) in enumerate(bonds) if s},
+                              limits=limits)
         return _response(summary)
 
     return api

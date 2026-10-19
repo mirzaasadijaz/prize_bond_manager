@@ -93,11 +93,10 @@ def test_auto_switch_disables_automatic_runs_only(db, agent):
     assert agent.scan().new_pending == 1                          # manual still works
 
 
-def test_warning_when_bond_was_bought_after_the_draw(db, agent):
+def test_a_bond_bought_after_the_draw_is_skipped(db, agent):
     db.add_copy("New", numbers("100001-100010"), 750, "2026-12-01")
     add_draw(db, [win("100005")], date="2026-10-01")
-    agent.scan()
-    assert agent.pending()[0]["warning"]
+    assert agent.scan().new_pending == 0 and agent.pending() == []
 
 
 def test_approval_refuses_when_bond_was_edited_after_the_scan(seeded, agent):

@@ -119,12 +119,16 @@ class WinsPage(BasePage):
 
     def _details(self) -> None:
         rows = self.panel.selected_rows()
+        if rows and not self.ctx.guard(self, "edit the win details"):
+            return
         if rows and EditWinDetailsDialog(self.ctx, rows, self).exec():
             self.ctx.changed()
 
     def _revert(self) -> None:
         rows = self.panel.selected_rows()
         if not rows:
+            return
+        if not self.ctx.guard(self, "undo the approval"):
             return
         others = sum(1 for r in rows if (r.get("same_number_count") or 1) > 1)
         note = ("\n\nOnly the selected bond(s) are affected; other bonds holding the same number "

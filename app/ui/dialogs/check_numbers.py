@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QPlainTextEdit, QVBoxLayout
 
-from ...api.checker import WinningIndex, check_bonds, held_bonds
+from ...api.checker import WinningIndex, check_bonds, held_bonds, held_limits
 from ...processing.numbers import parse_pattern
 from ..context import AppContext
 from ..table_model import Col
@@ -108,7 +108,8 @@ class CheckNumbersDialog(QDialog):
     def check_mine(self) -> None:
         bonds = held_bonds(self.db.conn)
         summary = check_bonds(self._index(), ((n, d, r) for n, d, r, _ in bonds),
-                              owned_at={i: s for i, (_, _, _, s) in enumerate(bonds) if s})
+                              owned_at={i: s for i, (_, _, _, s) in enumerate(bonds) if s},
+                              limits=held_limits(self.db.conn))
         self._show(summary, [])
 
     def _show(self, summary, notes: list[str]) -> None:

@@ -273,6 +273,8 @@ class DrawsPage(BasePage):
         draws = self.draws.selected_rows()
         if not rows or len(draws) != 1:
             return
+        if not self.ctx.guard(self, "edit the winning numbers"):
+            return
         scope = " shown" if everything and self.numbers.search.text().strip() else ""
         dialog = EditNumbersDialog(rows, ("number", "prize_label", "prize_amount"), scope, self)
         if not dialog.exec():
@@ -295,6 +297,8 @@ class DrawsPage(BasePage):
     def _tiers_numbers(self) -> None:
         draws = self.draws.selected_rows()
         if len(draws) != 1:
+            return
+        if not self.ctx.guard(self, "change the prizes of this draw"):
             return
         dialog = PrizeTiersDialog(self)
         if not dialog.exec():
@@ -495,6 +499,8 @@ class DrawsPage(BasePage):
     def _delete_draw(self) -> None:
         rows = self.draws.selected_rows()
         if not rows:
+            return
+        if not self.ctx.guard(self, "delete draws"):
             return
         pending = sum(r["pending"] for r in rows)
         wins = sum(r["wins"] for r in rows)
