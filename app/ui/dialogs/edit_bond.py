@@ -1,4 +1,4 @@
-"""Edit one bond: number, price, date of purchase, copy and position."""
+"""Edit one bond: number, price, date of purchase, location, copy and position."""
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLineEdit, QSpinBox,
@@ -8,7 +8,7 @@ from ...db import DuplicateBondError, PositionTakenError
 from ...processing.numbers import NumberError
 from ..context import AppContext
 from ..widgets import button, label, warn
-from .common import DateField, DenominationBox
+from .common import DateField, DenominationBox, LocationField
 
 
 class EditBondDialog(QDialog):
@@ -21,13 +21,19 @@ class EditBondDialog(QDialog):
         self.setWindowTitle(f"Edit bond {self.bond['number']}")
         self.setMinimumWidth(460)
         bond = self.bond
+        self.sold = bond["sale_id"] is not None
 
         self.number = QLineEdit(bond["number"])
         self.price = DenominationBox(extra=self.db.denominations())
         self.price.set_value(bond["denomination"])
         self.date = DateField()
         self.date.set_value(bond["purchase_date"])
+        self.location = LocationField(self.db)
+        self.location.set_value(bond["location"])
         status = "Active (takes part in every draw)"
+        if self.sold:
+            status = (f"Sold on {bond['sold_date']}" + (f" to {bond['sold_to']}" if bond["sold_to"]
+                                                        else ""))
         if bond["times_won"]:
             status += f" - has won {bond['times_won']} time(s)"
         if bond["pending_count"]:
@@ -49,7 +55,9 @@ class EditBondDialog(QDialog):
         form.addRow("Bond number", self.number)
         form.addRow("Price (Rs)", self.price)
         form.addRow("Date of purchase", self.date)
-        form.addRow("Status", label(status, wrap=True))
+        form.addRow("Location (optional)", self.location)
+        self.status_label = label(status, wrap=True)
+        form.addRow("Status", self.status_label)
         form.addRow("Copy (book)", self.copy_combo)
         form.addRow("Position in copy", self.position)
 
@@ -63,6 +71,14 @@ class EditBondDialog(QDialog):
         footer.addWidget(save)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        if self.sold:
+            layout.addWidget(label("This bond has been sold, so it cannot be changed here. To change "
+                                   "it, undo the sale (or take the bond back) on the Sales page "
+                                   "first.", "problem", wrap=True))
+            for widget in (self.number, self.price, self.date, self.location, self.copy_combo,
+                           self.position):
+                widget.setEnabled(False)
+            save.setEnabled(False)
         if bond["times_won"]:
             layout.addWidget(label("This bond has won before. Changing it here does not change the "
                                    "saved win records.", "muted", wrap=True))
@@ -78,7 +94,8 @@ class EditBondDialog(QDialog):
             return
         try:
             self.db.update_bond(self.bond_id, self.number.text(), price, self.date.value(),
-                                self.copy_combo.currentData(), self.position.value() or None)
+                                self.copy_combo.currentData(), self.position.value() or None,
+                                location=self.location.value())
         except (NumberError, DuplicateBondError, PositionTakenError, ValueError) as exc:
             warn(self, "Cannot save", str(exc))
             return

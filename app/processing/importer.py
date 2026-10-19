@@ -29,6 +29,9 @@ ALIASES: dict[str, set[str]] = {
     "copy": {"copy", "book", "batch", "set", "booklet", "bookno", "copyno", "copynumber",
              "copyname", "bookname", "batchno", "batchname"},
     "position": {"position", "pos", "place", "index", "seq", "sequence"},
+    # where the bond is kept (optional).  "place" is NOT here: it already means position.
+    "location": {"location", "locations", "loc", "keptat", "storedat", "storage", "whereisit",
+                 "whereabouts", "site", "keptin", "storedin"},
 }
 
 # "Copy 3" / "Book 2:" headings inside Word paragraphs or text files.
@@ -49,6 +52,7 @@ class ImportRecord:
     copy_name: str | None = None
     position: int | None = None
     source: str = ""
+    location: str | None = None
 
 
 @dataclass
@@ -65,6 +69,7 @@ class ParsedFile:
     has_position_column: bool = False
     has_denomination_column: bool = False
     has_date_column: bool = False
+    has_location_column: bool = False
 
     @property
     def missing_denomination(self) -> bool:
@@ -92,6 +97,8 @@ class ImportOptions:
     chunk_size: int = 100
     default_denomination: int | None = None
     default_date: str | None = None
+    # Optional place for bonds whose row has no location of its own (empty = none).
+    default_location: str | None = None
     # Leave out numbers that are already in the database.  Off by default: the same
     # number may be held in several copies, and then all those bonds win together.
     skip_existing: bool = False
@@ -180,6 +187,7 @@ def _read_table(table: RawTable, parsed: ParsedFile) -> list[ImportRecord]:
     parsed.has_position_column |= "position" in mapping
     parsed.has_denomination_column |= "denomination" in mapping
     parsed.has_date_column |= "date" in mapping
+    parsed.has_location_column |= "location" in mapping
     records: list[ImportRecord] = []
     for row in rows[start:]:
         text = _cell(row, mapping["number"])
@@ -210,9 +218,10 @@ def _read_table(table: RawTable, parsed: ParsedFile) -> list[ImportRecord]:
             else:
                 parsed.problems.append(f"{table.name}: position '{raw_position}' for {text} ignored")
         copy_name = _cell(row, mapping.get("copy")) or None
+        location = _cell(row, mapping.get("location")) or None
         for display, key in pattern.numbers:
             records.append(ImportRecord(display, key, denomination, when, copy_name,
-                                        position, table.name))
+                                        position, table.name, location))
     return records
 
 
@@ -357,15 +366,19 @@ def commit(db, groups: list[Group], options: ImportOptions, source_name: str = "
                 items = [group.items[i] for i in indexes]
                 numbers = [(r.display, r.key) for r in items]
                 dates = [r.purchase_date or options.default_date for r in items]
+                places = [r.location for r in items]          # None -> the default below
+                where = (options.default_location or "").strip() or None
                 skip_keys = skip.get(denomination)
                 if group.name is None:
                     result.merge(db.add_loose_bonds(numbers, denomination, dates=dates,
-                                                    skip_keys=skip_keys))
+                                                    skip_keys=skip_keys, location=where,
+                                                    locations=places))
                     continue
                 name = group.name if len(by_denomination) == 1 else f"{group.name} (Rs {denomination})"
                 positions = [group.positions[i] for i in indexes] if group.positions else None
                 result.merge(db.add_copy(name, numbers, denomination, dates=dates,
-                                         positions=positions, skip_keys=skip_keys))
+                                         positions=positions, skip_keys=skip_keys,
+                                         location=where, locations=places))
         db.log("File imported", f"{source_name or 'file'}: {result.summary()}")
     return result
 

@@ -86,36 +86,69 @@ def write_csv_folder(folder: str | Path, sheets: dict[str, Table]) -> list[Path]
 
 # ------------------------------------------------------- table builders
 def bonds_table(bonds: list[dict]) -> Table:
+    """Bonds with where they are kept and whether you still hold them (sold bonds included)."""
     headers = ["Bond number", "Denomination", "Purchase date", "Times won", "Win pending",
                "Bonds with this number", "Copy (book)", "Position in copy",
-               "1st bond number of copy"]
+               "1st bond number of copy", "Location", "Held / sold", "Sold on", "Sold to"]
     rows = [[b["number"], b["denomination"], b["purchase_date"] or "",
              b.get("times_won") or 0,
              "Yes" if b.get("pending_count") else "",
              b.get("same_count") or 1,
-             b["copy_name"] or "", b["position"], b["copy_first_number"] or ""]
+             b["copy_name"] or "", b["position"], b["copy_first_number"] or "",
+             b.get("location") or "", "Sold" if b.get("sale_id") is not None else "Held",
+             b.get("sold_date") or "", b.get("sold_to") or ""]
             for b in bonds]
     return headers, rows
 
 
 def copies_table(copies: list[dict]) -> Table:
-    headers = ["Copy (book)", "1st bond number", "Size (positions)", "Bonds on file",
-               "Bonds that won", "Denomination", "First purchase date", "Note"]
+    headers = ["Copy (book)", "1st bond number", "Size (positions)", "Bonds held", "Bonds sold",
+               "Bonds that won", "Denomination", "First purchase date", "Location", "Note"]
 
     def denomination(c):
         low, high = c["min_denomination"], c["max_denomination"]
         return "" if low is None else (low if low == high else f"{low}-{high}")
 
-    rows = [[c["name"], c["first_number"] or "", c["size"], c["bonds"], c["won"],
-             denomination(c), c["purchase_date"] or "", c["note"] or ""] for c in copies]
+    rows = [[c["name"], c["first_number"] or "", c["size"], c["bonds"], c.get("sold") or 0,
+             c["won"], denomination(c), c["purchase_date"] or "", c.get("location") or "",
+             c["note"] or ""] for c in copies]
+    return headers, rows
+
+
+def sales_table(sales: list[dict]) -> Table:
+    """One row per sale."""
+    headers = ["Sale date", "Sold to", "Contact", "Location", "Bonds", "Face value",
+               "Received", "Difference to face value", "Copies", "Note"]
+    rows = [[s["sale_date"], s["buyer"] or "", s["contact"] or "", s["location"] or "",
+             s["bonds"], s["face_value"], s["total_amount"], s["difference"],
+             ", ".join(s["copy_names"]), s["note"] or ""] for s in sales]
+    return headers, rows
+
+
+def sold_bonds_table(db) -> Table:
+    """One row per bond sold, as it was when it was sold (copy, position, price)."""
+    headers = ["Sale date", "Sold to", "Bond number", "Denomination", "Sold for", "Copy (book)",
+               "1st bond number of copy", "Position in copy", "Copy size", "Location (kept at)",
+               "Bond still in the list"]
+    data = db.query(
+        "SELECT s.sale_date, s.buyer, i.bond_number, i.denomination, i.price, i.copy_name, "
+        "i.copy_first_number, i.position, i.copy_size, i.bond_location, "
+        "(i.bond_id IS NOT NULL) AS exists_now "
+        "FROM sale_items i JOIN sales s ON s.id = i.sale_id "
+        "ORDER BY s.sale_date DESC, s.id DESC, i.copy_name, i.position, i.num")
+    rows = [[r["sale_date"], r["buyer"] or "", r["bond_number"], r["denomination"], r["price"],
+             r["copy_name"] or "", r["copy_first_number"] or "", r["position"], r["copy_size"],
+             r["bond_location"] or "", "Yes" if r["exists_now"] else "No (deleted)"]
+            for r in data]
     return headers, rows
 
 
 def draws_table(draws: list[dict]) -> Table:
     headers = ["Draw date", "Denomination", "Label", "Location", "Winning numbers", "Pending",
-               "Approved wins"]
+               "Approved wins", "Source"]
     rows = [[d["draw_date"], d["denomination"] if d["denomination"] else "All",
-             d["label"] or "", d.get("location") or "", d["numbers"], d["pending"], d["wins"]]
+             d["label"] or "", d.get("location") or "", d["numbers"], d["pending"], d["wins"],
+             d.get("source") or "Manual"]
             for d in draws]
     return headers, rows
 
@@ -143,6 +176,8 @@ def collect_all(db) -> dict[str, Table]:
     for denomination in db.denominations():
         sheets[f"Bonds Rs {denomination}"] = bonds_table(db.list_bonds(denomination=denomination))
     sheets["Copies"] = copies_table(db.list_copies())
+    sheets["Sales"] = sales_table(db.list_sales())
+    sheets["Sold bonds"] = sold_bonds_table(db)
     sheets["Pending wins"] = win_table(db.list_pending(), "Found on", "found_at", claims=False)
     sheets["Win list"] = win_table(db.list_wins())
     sheets["Draws"] = draws_table(db.list_draws())

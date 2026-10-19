@@ -1,2 +1,5 @@
 -r requirements.txt
+-r requirements-api.txt
 pytest>=8.0
+httpx>=0.27         # FastAPI's test client
+reportlab>=4.0      # builds a small PDF for the PDF-reading test

@@ -12,7 +12,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--demo", action="store_true",
                         help="open a fresh demo database (demo.db next to the program) filled "
                              "with sample bonds, copies and a draw")
+    parser.add_argument("--serve", action="store_true",
+                        help="do not open the window: run the local checking API instead "
+                             "(POST /check takes thousands of bonds in one request)")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="with --serve: address to listen on (default 127.0.0.1, this "
+                             "computer only)")
+    parser.add_argument("--port", type=int, default=8765, help="with --serve: port (default 8765)")
+    parser.add_argument("--token", default=None,
+                        help="with --serve: require 'Authorization: Bearer <token>' "
+                             "(needed when --host is not this computer)")
     args = parser.parse_args(argv)
+
+    if args.serve:                    # no window: Qt is not even imported
+        from app.api.server import run
+        from app.config import resolve_db_path
+        run(resolve_db_path(args.db), host=args.host, port=args.port, token=args.token)
+        return 0
 
     from PyQt6.QtWidgets import QApplication, QMessageBox
 
@@ -47,12 +63,13 @@ def main(argv: list[str] | None = None) -> int:
         QMessageBox.critical(None, APP_NAME, f"The data file could not be opened:\n{path}\n\n{exc}")
         return 1
     if args.demo:
-        demo.seed(db)
+        demo.seed(db, with_sale=True)
 
     ctx = AppContext(db)
     window = MainWindow(ctx)
     window.show()
     ctx.run_agent("startup")          # silent unless it finds something; see the sidebar badge
+    window.start_online_check()       # only if switched on, at most once a day, in the background
     code = app.exec()
     db.close()
     return code

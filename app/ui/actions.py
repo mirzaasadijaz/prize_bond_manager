@@ -10,6 +10,7 @@ from ..processing import exporter
 from .context import AppContext
 from .dialogs.add_bonds import AddBondsDialog
 from .dialogs.import_dialog import ImportDialog
+from .dialogs.sale_dialog import SaleDialog
 from .dialogs.win_report import WinReportDialog
 from .widgets import info, last_dir, pick_save_file, remember_dir, warn
 
@@ -24,6 +25,18 @@ def import_file(ctx: AppContext, parent, path: str | None = None) -> None:
     dialog = ImportDialog(ctx, parent, path)
     if dialog.exec() and dialog.result:
         ctx.after_bonds_added(parent, dialog.result, "Import finished")
+
+
+def sell_bonds(ctx: AppContext, parent, bonds: list[dict] | None = None) -> int | None:
+    """Open the sale dialog (optionally with bonds already chosen); returns the new sale's id."""
+    dialog = SaleDialog(ctx, parent, bonds)
+    if not dialog.exec() or dialog.sale_id is None:
+        return None
+    sale = ctx.db.get_sale(dialog.sale_id)
+    ctx.changed()
+    ctx.status.emit(f"Sale recorded: {sale['bonds']:,} bond(s) for Rs {sale['total_amount']:,}. "
+                    "They are now shown as sold.")
+    return dialog.sale_id
 
 
 def show_win_report(parent, wins: list[dict], title: str = "Win report", intro: str = "") -> None:

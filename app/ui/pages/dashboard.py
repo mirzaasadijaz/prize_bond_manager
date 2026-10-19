@@ -17,8 +17,9 @@ def _total_style(row):
 
 class DashboardPage(BasePage):
     HOLDINGS = [
-        Col("price", "Price", 110, "left"),
-        Col("bonds", "Bonds", 90, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
+        Col("price", "Price", 110, "left", sort_key="denomination"),
+        Col("bonds", "Held", 80, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
+        Col("sold", "Sold", 80, "right", numeric=True, fmt=lambda v, r: f"{v:,}" if v else "-"),
         Col("won", "Have won", 100, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
         Col("value", "Value (Rs)", 130, "right", numeric=True, fmt=lambda v, r: f"{v:,}"),
     ]
@@ -53,7 +54,9 @@ class DashboardPage(BasePage):
         self.card_value = StatCard("Investment value")
         self.card_wins = StatCard("Wins so far")
         self.card_pending = StatCard("Waiting for your approval")
-        for card in (self.card_active, self.card_value, self.card_wins, self.card_pending):
+        self.card_sold = StatCard("Sold so far")
+        for card in (self.card_active, self.card_value, self.card_wins, self.card_sold,
+                     self.card_pending):
             cards.addWidget(card, 1)
         self.root.addLayout(cards)
 
@@ -77,6 +80,7 @@ class DashboardPage(BasePage):
             ("Add bonds...", "primary", lambda: actions.add_bonds(self.ctx, self)),
             ("Import file...", "default", lambda: actions.import_file(self.ctx, self)),
             ("Record draw results", "default", lambda: self.ctx.navigate.emit("draws")),
+            ("Record a sale...", "default", lambda: actions.sell_bonds(self.ctx, self)),
             ("Run win-checking agent", "default", self._run_agent),
         ]
         for text, kind, handler in buttons:
@@ -98,13 +102,19 @@ class DashboardPage(BasePage):
         if shared:
             sub += f" - {shared:,} number(s) held more than once"
         self.card_active.set(f"{stats['bond_count']:,}", sub)
-        self.card_value.set(money(stats["bond_value"]), "face value of all your bonds")
+        self.card_value.set(money(stats["bond_value"]), "face value of bonds held")
         prize = f"prizes {money(stats['prize_total'])}" if stats["prize_total"] else "approved wins"
         if stats["win_count"]:
             prize += f" - {stats['unpaid_count']:,} not paid yet"
             if stats["repeat_winners"]:
                 prize += f", {stats['repeat_winners']:,} bond(s) won more than once"
         self.card_wins.set(f"{stats['win_count']:,}", prize)
+        if stats["sold_count"]:
+            self.card_sold.set(f"{stats['sold_count']:,}",
+                               f"in {stats['sale_count']:,} sale(s) - received "
+                               f"{money(stats['sale_total'])}")
+        else:
+            self.card_sold.set("0", "nothing sold")
         pending = stats["pending_count"]
         self.card_pending.set(f"{pending:,}", "open Pending Wins to review" if pending
                               else "nothing to review")
@@ -112,12 +122,14 @@ class DashboardPage(BasePage):
         self.banner_text.setText(f"{pending:,} possible win(s) found by the agent - nothing is "
                                  "recorded until you approve them.")
 
-        rows = [{"price": money(d["denomination"]), "bonds": d["bonds"], "won": d["won"],
-                 "value": d["value"]} for d in stats["by_denomination"]]
+        rows = [{"price": money(d["denomination"]), "denomination": d["denomination"],
+                 "bonds": d["bonds"], "sold": d["sold"], "won": d["won"], "value": d["value"]}
+                for d in stats["by_denomination"]]
         if rows:
-            rows.append({"price": "Total", "bonds": stats["bond_count"],
-                         "won": sum(r["won"] for r in rows), "value": stats["bond_value"],
-                         "is_total": True})
+            rows.append({"price": "Total", "denomination": 10 ** 12,       # sorts last
+                         "bonds": stats["bond_count"],
+                         "sold": stats["sold_count"], "won": sum(r["won"] for r in rows),
+                         "value": stats["bond_value"], "is_total": True})
         self.holdings.set_rows(rows)
         self.recent.set_rows([
             {**w, "copy": reports.copy_text(w) if w["copy_name"] else "-",

@@ -13,7 +13,7 @@ from ...processing.parsers import FILE_DIALOG_FILTER, ParseError
 from ..context import AppContext
 from ..table_model import Col
 from ..widgets import TablePanel, button, dash, label, pick_open_file, set_role, warn
-from .common import DateField, DenominationBox
+from .common import DateField, DenominationBox, LocationField
 
 PREVIEW_ROWS = 500
 REPEATED = "(repeated in this copy - ignored)"
@@ -33,7 +33,8 @@ class ImportDialog(QDialog):
         Col("price", "Price (Rs)", 100, "right", fmt=lambda v, r: dash(v)),
         Col("date", "Purchased", 110, fmt=dash),
         Col("position", "Position", 80, "right", fmt=dash),
-        Col("copy", "Copy it goes into", 260, fmt=lambda v, r: v or "(loose)"),
+        Col("location", "Location", 130, fmt=dash),
+        Col("copy", "Copy it goes into", 240, fmt=lambda v, r: v or "(loose)"),
     ]
 
     def __init__(self, ctx: AppContext, parent=None, path: str | None = None):
@@ -65,6 +66,10 @@ class ImportDialog(QDialog):
         self.copy_name.setPlaceholderText("(file name)")
         self.price = DenominationBox(allow_blank=True)
         self.date = DateField()
+        self.location = LocationField(self.db)
+        self.location.setToolTip("Optional. Used for bonds whose row in the file has no Location "
+                                 "of its own (a 'Location' column in the file is read "
+                                 "automatically).")
         self.skip_existing = QCheckBox("Skip numbers I already have")
         self.skip_existing.setToolTip(
             "Off (default): a number you already hold is added again, as a bond of its own. The "
@@ -77,6 +82,7 @@ class ImportDialog(QDialog):
         form.addRow("Copy name (or prefix)", self.copy_name)
         form.addRow("Price for bonds without one (Rs)", self.price)
         form.addRow("Date for bonds without one", self.date)
+        form.addRow("Location for bonds without one", self.location)
         form.addRow("", self.skip_existing)
 
         self.summary = label("", wrap=True)
@@ -114,6 +120,7 @@ class ImportDialog(QDialog):
         self.copy_name.textChanged.connect(self._refresh)
         self.price.editTextChanged.connect(self._refresh)
         self.date.edit.dateChanged.connect(self._refresh)
+        self.location.textChanged.connect(self._refresh)
         self.skip_existing.toggled.connect(self._refresh)
         self._held_cache: dict[tuple, tuple[int, list[str]]] = {}
         self._refresh()
@@ -167,6 +174,7 @@ class ImportDialog(QDialog):
                              chunk_size=self.chunk.value(),
                              default_denomination=self.price.value(),
                              default_date=self.date.value(),
+                             default_location=self.location.value(),
                              skip_existing=self.skip_existing.isChecked())
 
     def _held(self, options: ImportOptions) -> tuple[int, list[str]]:
@@ -212,6 +220,7 @@ class ImportDialog(QDialog):
         rows = [{"number": rec.display, "num": rec.key,
                  "price": rec.denomination or options.default_denomination,
                  "date": rec.purchase_date or options.default_date,
+                 "location": rec.location or options.default_location,
                  "copy": owner[id(rec)] if id(rec) in owner else REPEATED,
                  "position": position_of.get(id(rec))}
                 for rec in parsed.records[:PREVIEW_ROWS]]

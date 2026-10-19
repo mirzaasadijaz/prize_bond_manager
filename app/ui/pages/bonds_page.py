@@ -18,11 +18,19 @@ from .base import BasePage
 WON_CHOICES = [("All bonds", None), ("Bonds that have won", True), ("Bonds that never won", False)]
 
 
+# Bonds you sold stay in the table (greyed out) if you ask for them: they are no longer yours.
+HELD_CHOICES = [("Bonds I hold", False), ("Bonds I sold", True), ("Held and sold", None)]
+
+
 def _status_text(value, row) -> str:
+    if row["sale_id"] is not None:
+        return f"Sold {row['sold_date']}" + (f" to {row['sold_to']}" if row["sold_to"] else "")
     return "Active - win pending" if row["pending_count"] else "Active"
 
 
 def _row_style(row):
+    if row["sale_id"] is not None:
+        return theme.MUTED, None
     if row["pending_count"]:
         return theme.WARNING_TEXT, theme.WARNING_BG
     return None
@@ -34,7 +42,8 @@ class BondsPage(BasePage):
         Col("denomination", "Price (Rs)", 100, "right", numeric=True, export_raw=True,
             fmt=lambda v, r: f"{v:,}"),
         Col("purchase_date", "Purchased", 110, fmt=dash),
-        Col("status", "Status", 150, fmt=_status_text),
+        Col("status", "Status", 240, fmt=_status_text),
+        Col("location", "Location", 130, fmt=dash),
         Col("times_won", "Times won", 90, "right", numeric=True, export_raw=True,
             fmt=lambda v, r: str(v) if v else "-"),
         same_number_col("same_count", single="-"),
@@ -56,14 +65,23 @@ class BondsPage(BasePage):
                             "draw after a win; 'Times won' counts their wins.")
         self.add_button = header.add_action(button("Add bonds...", "primary"))
         self.import_button = header.add_action(button("Import file..."))
+        self.sell_button = header.add_action(button("Sell selected...",
+                                                    tooltip="Record that the selected bonds were "
+                                                            "sold to somebody"))
         self.edit_button = header.add_action(button("Edit"))
         self.delete_button = header.add_action(button("Delete", "danger"))
         self.add_button.clicked.connect(lambda: actions.add_bonds(self.ctx, self))
         self.import_button.clicked.connect(lambda: actions.import_file(self.ctx, self))
+        self.sell_button.clicked.connect(self._sell)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
         self.root.addWidget(header)
 
+        self.held = QComboBox()
+        for text, value in HELD_CHOICES:
+            self.held.addItem(text, value)
+        self.held.setToolTip("Sold bonds are not yours any more: they take no part in draws held "
+                             "on or after the day they were sold")
         self.won = QComboBox()
         for text, value in WON_CHOICES:
             self.won.addItem(text, value)
@@ -74,7 +92,7 @@ class BondsPage(BasePage):
             edit.setPlaceholderText(hint)
             edit.setMaximumWidth(112)
             edit.returnPressed.connect(self.refresh)
-        self.shared_only = QCheckBox("Only numbers held more than once")
+        self.shared_only = QCheckBox("Shared numbers only")
         self.shared_only.setToolTip("Show just the bonds whose number sits in more than one "
                                     "copy (they win together)")
         self.shared_only.toggled.connect(self.refresh)
@@ -83,12 +101,13 @@ class BondsPage(BasePage):
         clear = button("Clear filters")
         clear.clicked.connect(self._clear_filters)
         self.won.currentIndexChanged.connect(self.refresh)
+        self.held.currentIndexChanged.connect(self.refresh)
 
         bar = QFrame()
         bar.setObjectName("Card")
         row = QHBoxLayout(bar)
         row.setContentsMargins(14, 10, 14, 10)
-        for widget in (label("Show", "muted"), self.won, label("Number", "muted"),
+        for widget in (label("Show", "muted"), self.held, self.won, label("Number", "muted"),
                        self.number_from, label("-", "muted"), self.number_to,
                        label("Purchased", "muted"), self.date_from, label("-", "muted"),
                        self.date_to, self.shared_only, apply, clear):
@@ -155,7 +174,8 @@ class BondsPage(BasePage):
         date_from, date_to = self._date(self.date_from), self._date(self.date_to)
         if date_from is False or date_to is False:
             return None
-        return {"won": self.won.currentData(), "number_from": self._number(self.number_from),
+        return {"sold": self.held.currentData(), "won": self.won.currentData(),
+                "number_from": self._number(self.number_from),
                 "number_to": self._number(self.number_to), "date_from": date_from,
                 "date_to": date_to}
 
@@ -163,6 +183,7 @@ class BondsPage(BasePage):
         for edit in (self.number_from, self.number_to, self.date_from, self.date_to):
             edit.clear()
         self.won.setCurrentIndex(0)
+        self.held.setCurrentIndex(0)
         self.shared_only.setChecked(False)
         self.refresh()
 
@@ -189,9 +210,10 @@ class BondsPage(BasePage):
 
     def _update_buttons(self) -> None:
         panel = self._current_panel()
-        count = len(panel.selected_rows()) if panel else 0
-        self.edit_button.setEnabled(count == 1)
-        self.delete_button.setEnabled(count >= 1)
+        rows = panel.selected_rows() if panel else []
+        self.edit_button.setEnabled(len(rows) == 1)
+        self.delete_button.setEnabled(bool(rows))
+        self.sell_button.setEnabled(bool(rows) and all(r["sale_id"] is None for r in rows))
 
     # -- actions ---------------------------------------------------------------------
     def _edit(self) -> None:
@@ -203,6 +225,12 @@ class BondsPage(BasePage):
             self.ctx.changed()
             self.ctx.offer_review(self, self.ctx.run_agent("bonds"))
 
+    def _sell(self) -> None:
+        panel = self._current_panel()
+        rows = [r for r in (panel.selected_rows() if panel else []) if r["sale_id"] is None]
+        if rows:
+            actions.sell_bonds(self.ctx, self, rows)
+
     def _delete(self) -> None:
         panel = self._current_panel()
         rows = panel.selected_rows() if panel else []
@@ -213,6 +241,9 @@ class BondsPage(BasePage):
         if won:
             text += (f"\n\n{won:,} of them have won before; their win records stay in the Win "
                      "List.")
+        sold = sum(1 for r in rows if r["sale_id"] is not None)
+        if sold:
+            text += f"\n\n{sold:,} of them were sold; the sale records keep their details."
         if not confirm(self, "Delete bonds", text, yes="Delete", danger=True):
             return
         removed = self.db.delete_bonds([r["id"] for r in rows])

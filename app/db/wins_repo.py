@@ -5,26 +5,28 @@ from typing import Sequence
 
 from ..config import FINAL_WIN_STATUS, WIN_STATUSES
 from ..models import ApprovalResult, ScanResult
-from .core import chunks, now_iso
-
-KEEP = object()        # "leave this field as it is" for update_win_details
+from .core import KEEP, chunks, now_iso  # noqa: F401  (KEEP is re-used by callers)
 
 # A bond matches when it carries a winning number and has the draw's denomination
 # (a draw with no denomination matches all).  Every bond that holds the number
 # matches - the same number may sit in several copies, and when it is drawn they
 # all win.  A bond that has already won still takes part in every later draw.
+# A bond you sold takes part only in the draws held *before* the sale date: from the sale
+# date on it belongs to the buyer.
 MATCH_FROM = """
 FROM winning_numbers w
 JOIN draws d ON d.id = w.draw_id
 JOIN bonds b ON b.num = w.num
              AND (d.denomination IS NULL OR b.denomination = d.denomination)
+             AND (b.sale_id IS NULL OR d.draw_date < b.sold_date)
 WHERE (:draw_id IS NULL OR w.draw_id = :draw_id)
 """
 
 PENDING_SELECT = """
 SELECT p.id AS pending_id, p.status AS pending_status, p.found_at, p.resolved_at, p.note,
        b.id AS bond_id, b.number AS bond_number, b.num AS bond_num, b.denomination,
-       b.purchase_date, b.position, b.status AS bond_status,
+       b.purchase_date, b.position, b.status AS bond_status, b.location AS bond_location,
+       b.sale_id, b.sold_date, sl.buyer AS sold_to,
        c.id AS copy_id, c.name AS copy_name, c.first_number AS copy_first_number,
        c.size AS copy_size,
        d.id AS draw_id, d.draw_date, d.label AS draw_label, d.location AS draw_location,
@@ -42,6 +44,7 @@ JOIN bonds b ON b.id = p.bond_id
 JOIN draws d ON d.id = p.draw_id
 JOIN winning_numbers w ON w.id = p.winning_number_id
 LEFT JOIN copies c ON c.id = b.copy_id
+LEFT JOIN sales sl ON sl.id = b.sale_id
 """
 
 # Wins sharing a draw, a denomination and a number are the same winning number
@@ -57,8 +60,11 @@ SELECT w.*,
        CASE WHEN w.bond_id IS NULL THEN 1 ELSE
             (SELECT COUNT(*) FROM wins y WHERE y.bond_id = w.bond_id
                AND (y.draw_date < w.draw_date
-                    OR (y.draw_date = w.draw_date AND y.id <= w.id))) END AS win_no
+                    OR (y.draw_date = w.draw_date AND y.id <= w.id))) END AS win_no,
+       bd.sold_date AS sold_date, sl.buyer AS sold_to
 FROM wins w
+LEFT JOIN bonds bd ON bd.id = w.bond_id
+LEFT JOIN sales sl ON sl.id = bd.sale_id
 """
 
 
@@ -72,7 +78,8 @@ class WinsMixin:
         """
         result = ScanResult(draw_id=draw_id, ran_at=now_iso())
         params = {"draw_id": draw_id}
-        result.bonds_checked = self.conn.execute("SELECT COUNT(*) FROM bonds").fetchone()[0]
+        result.bonds_checked = self.conn.execute(
+            "SELECT COUNT(*) FROM bonds WHERE sale_id IS NULL").fetchone()[0]
         result.draws_checked = 1 if draw_id is not None else self.conn.execute(
             "SELECT COUNT(*) FROM draws").fetchone()[0]
         with self.tx():
@@ -149,6 +156,8 @@ class WinsMixin:
                 elif (row["draw_denomination"] is not None
                       and row["draw_denomination"] != row["denomination"]):
                     reason = "The bond's denomination no longer matches the draw."
+                elif row["sale_id"] is not None and row["sold_date"] <= row["draw_date"]:
+                    reason = "The bond was sold on or before the draw date."
                 if reason:
                     self.conn.execute(
                         "UPDATE pending_wins SET status = 'rejected', resolved_at = ?, note = ? "
@@ -164,13 +173,14 @@ class WinsMixin:
                     win_id = self.conn.execute(
                         "INSERT INTO wins (bond_id, draw_id, bond_number, num, denomination, "
                         "draw_date, draw_label, prize_label, prize_amount, copy_id, copy_name, "
-                        "copy_first_number, position, copy_size, approved_at, location) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "copy_first_number, position, copy_size, approved_at, location, "
+                        "bond_location) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (row["bond_id"], row["draw_id"], row["bond_number"], row["bond_num"],
                          row["denomination"], row["draw_date"], row["draw_label"],
                          row["prize_label"], row["prize_amount"], row["copy_id"],
                          row["copy_name"], row["copy_first_number"], row["position"],
-                         row["copy_size"], stamp, row["draw_location"]),
+                         row["copy_size"], stamp, row["draw_location"], row["bond_location"]),
                     ).lastrowid
                 self.conn.execute(
                     "UPDATE pending_wins SET status = 'approved', resolved_at = ?, note = NULL "
@@ -265,11 +275,13 @@ class WinsMixin:
         return changed
 
     def known_locations(self) -> list[str]:
-        """Every location used so far (draws and wins), for suggestions while typing."""
+        """Every location used so far (draws, wins, bonds, copies, sales), for suggestions
+        while typing."""
         rows = self.conn.execute(
-            "SELECT location FROM draws WHERE location IS NOT NULL AND location <> '' "
-            "UNION SELECT location FROM wins WHERE location IS NOT NULL AND location <> '' "
-            "ORDER BY 1 COLLATE NOCASE")
+            " UNION ".join(f"SELECT location FROM {table} "
+                           "WHERE location IS NOT NULL AND location <> ''"
+                           for table in ("draws", "wins", "bonds", "copies", "sales"))
+            + " ORDER BY 1 COLLATE NOCASE")
         return [r["location"] for r in rows]
 
     def revert_wins(self, win_ids: Sequence[int]) -> int:
@@ -299,7 +311,11 @@ class WinsMixin:
     # ------------------------------------------------------------- dashboard
     def dashboard_stats(self) -> dict:
         one = lambda sql: self.conn.execute(sql).fetchone()  # noqa: E731
-        bonds = one("SELECT COUNT(*) AS c, COALESCE(SUM(denomination), 0) AS v FROM bonds")
+        bonds = one("SELECT COUNT(*) AS c, COALESCE(SUM(denomination), 0) AS v FROM bonds "
+                    "WHERE sale_id IS NULL")
+        sold = one("SELECT COUNT(*) AS c, COALESCE(SUM(denomination), 0) AS v FROM bonds "
+                   "WHERE sale_id IS NOT NULL")
+        sales = one("SELECT COUNT(*) AS c, COALESCE(SUM(total_amount), 0) AS t FROM sales")
         wins = one("SELECT COUNT(*) AS c, COALESCE(SUM(prize_amount), 0) AS s FROM wins")
         open_wins = self.conn.execute(
             "SELECT COUNT(*) AS c, COALESCE(SUM(prize_amount), 0) AS s FROM wins "
@@ -308,15 +324,19 @@ class WinsMixin:
                      "GROUP BY bond_id HAVING COUNT(*) > 1)")
         copies = one("SELECT COUNT(*) AS c FROM copies")
         # Numbers held in more than one bond (several copies): they win together.
-        shared = one("SELECT COUNT(*) AS c FROM (SELECT 1 FROM bonds "
+        shared = one("SELECT COUNT(*) AS c FROM (SELECT 1 FROM bonds WHERE sale_id IS NULL "
                      "GROUP BY denomination, num HAVING COUNT(*) > 1)")
         by_denomination = self.query(
-            "SELECT b.denomination, COUNT(*) AS bonds, "
-            "COALESCE(SUM(EXISTS (SELECT 1 FROM wins x WHERE x.bond_id = b.id)), 0) AS won, "
-            "COALESCE(SUM(b.denomination), 0) AS value "
+            "SELECT b.denomination, COALESCE(SUM(b.sale_id IS NULL), 0) AS bonds, "
+            "COALESCE(SUM(b.sale_id IS NOT NULL), 0) AS sold, "
+            "COALESCE(SUM(b.sale_id IS NULL AND "
+            "EXISTS (SELECT 1 FROM wins x WHERE x.bond_id = b.id)), 0) AS won, "
+            "COALESCE(SUM(CASE WHEN b.sale_id IS NULL THEN b.denomination END), 0) AS value "
             "FROM bonds b GROUP BY b.denomination ORDER BY b.denomination")
         return {
             "bond_count": bonds["c"], "bond_value": bonds["v"],
+            "sold_count": sold["c"], "sold_value": sold["v"],
+            "sale_count": sales["c"], "sale_total": sales["t"],
             "win_count": wins["c"], "prize_total": wins["s"],
             "unpaid_count": open_wins["c"], "unpaid_total": open_wins["s"],
             "repeat_winners": repeat["c"],

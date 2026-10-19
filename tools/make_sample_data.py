@@ -49,6 +49,24 @@ def word_list() -> None:
     document.save(OUT / "copies_list.docx")
 
 
+def csv_with_location() -> None:
+    """The optional Location column: two copies kept in different places, and one single bond
+    that is kept somewhere else than the rest of its copy (a bond without a place is allowed)."""
+    rows = []
+    for name, numbers, price, date, place in (
+            ("Safe Book 1", range(500001, 500011), 750, "2026-01-05", "Home safe"),
+            ("Locker Book 1", range(510001, 510011), 1500, "2026-02-10", "Bank locker")):
+        for position, number in enumerate(numbers, start=1):
+            rows.append([number, price, date, name, position,
+                         "Office drawer" if number == 500003 else place])
+    rows.append([520001, 200, "2026-03-01", "", "", ""])             # loose, no place given
+    with open(OUT / "bonds_with_location.csv", "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["Bond Number", "Denomination", "Date of Purchase", "Copy", "Position",
+                         "Location"])
+        writer.writerows(rows)
+
+
 def winning_numbers() -> None:
     """Four winning numbers; each one is held by two bonds in the sample copies."""
     with open(OUT / "winning_numbers.csv", "w", newline="", encoding="utf-8") as handle:
@@ -63,5 +81,6 @@ if __name__ == "__main__":
     csv_with_copies()
     excel_two_sheets()
     word_list()
+    csv_with_location()
     winning_numbers()
     print("Sample files written to", OUT)

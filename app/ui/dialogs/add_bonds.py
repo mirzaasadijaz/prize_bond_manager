@@ -11,7 +11,7 @@ from ...models import AddResult
 from ...processing.numbers import parse_pattern
 from ..context import AppContext
 from ..widgets import button, label, set_role, warn
-from .common import DateField, DenominationBox
+from .common import DateField, DenominationBox, LocationField
 from .copies_editor import CopiesEditor
 
 
@@ -135,6 +135,11 @@ class AddBondsDialog(QDialog):
         form = QFormLayout(common)
         form.addRow("Price (Rs)", self.price)
         form.addRow("Date of purchase", self.date)
+        self.location = LocationField(self.db)
+        self.location.setToolTip("Where these bonds are kept. Leave empty if it does not matter; "
+                                 "in the copies table each copy can also have its own place, "
+                                 "which wins over this one.")
+        form.addRow("Location (optional)", self.location)
 
         self.copies = CopiesEditor(self.db)
         self.quick = QuickAdd(self.db)
@@ -193,6 +198,7 @@ class AddBondsDialog(QDialog):
             warn(self, "Price needed", "Enter the price of these bonds, for example 750.")
             return
         purchase_date = self.date.value()
+        common_location = self.location.value()
         copies_tab = self.tabs.currentIndex() == 0
         if copies_tab:
             groups = self.copies.collect()
@@ -215,20 +221,24 @@ class AddBondsDialog(QDialog):
             result = AddResult()
             with self.db.tx():
                 if copies_tab:
-                    for name, numbers in groups:
+                    for (name, numbers), own in zip(groups, self.copies.collect_locations()):
                         result.merge(self.db.add_copy(name, numbers, denomination, purchase_date,
-                                                      skip_keys=skip_keys))
+                                                      skip_keys=skip_keys,
+                                                      location=own or common_location))
                 else:
                     numbers = self.quick.parsed().numbers
                     if kind == "new":
                         result.merge(self.db.add_copy(value, numbers, denomination, purchase_date,
-                                                      skip_keys=skip_keys))
+                                                      skip_keys=skip_keys,
+                                                      location=common_location))
                     elif kind == "existing":
                         result.merge(self.db.append_to_copy(value, numbers, denomination,
-                                                            purchase_date, skip_keys=skip_keys))
+                                                            purchase_date, skip_keys=skip_keys,
+                                                            location=common_location))
                     else:
                         result.merge(self.db.add_loose_bonds(numbers, denomination, purchase_date,
-                                                             skip_keys=skip_keys))
+                                                             skip_keys=skip_keys,
+                                                             location=common_location))
         except Exception as exc:  # noqa: BLE001 - nothing was written (rolled back)
             warn(self, "Could not add bonds", str(exc))
             return

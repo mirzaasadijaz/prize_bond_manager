@@ -14,6 +14,7 @@ from ...db import Database
 from ...processing.numbers import PatternResult, format_number, parse_pattern
 from .. import theme
 from ..widgets import button, label
+from .common import LocationField
 
 _RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
 
@@ -23,6 +24,7 @@ class CopyRow:
     name: str
     pattern: str = ""
     result: PatternResult = field(default_factory=PatternResult)
+    location: str = ""       # optional: where this copy is kept
     problem: str = ""        # blocks adding
     note: str = ""           # information only (numbers shared with other copies)
 
@@ -42,7 +44,8 @@ class CopiesEditor(QWidget):
     """A table of copies plus a text box for the numbers of the selected copy."""
 
     changed = pyqtSignal()
-    HEADERS = ["Copy name", "Bonds", "First number", "Last number", "Check"]
+    HEADERS = ["Copy name", "Bonds", "First number", "Last number", "Location (optional)", "Check"]
+    LOCATION, CHECK = 4, 5
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -58,7 +61,7 @@ class CopiesEditor(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
         self.table.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate((170, 70, 110, 110)):
+        for column, width in enumerate((170, 70, 110, 110, 160)):
             self.table.setColumnWidth(column, width)
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.currentCellChanged.connect(lambda *_: self._sync_editor())
@@ -104,8 +107,9 @@ class CopiesEditor(QWidget):
                 return candidate
         return f"Copy {len(self.rows) + 1}"
 
-    def add_row(self, name: str | None = None, pattern: str = "") -> None:
-        row = CopyRow(name or self._next_name(), pattern, parse_pattern(pattern))
+    def add_row(self, name: str | None = None, pattern: str = "", location: str = "") -> None:
+        row = CopyRow(name or self._next_name(), pattern, parse_pattern(pattern),
+                      location=location.strip())
         self.rows.append(row)
         self._loading = True
         index = self.table.rowCount()
@@ -113,7 +117,8 @@ class CopiesEditor(QWidget):
         self.table.setItem(index, 0, _item(row.name, editable=True))
         for column in (1, 2, 3):
             self.table.setItem(index, column, _item(right=column == 1))
-        self.table.setItem(index, 4, _item())
+        self.table.setItem(index, self.LOCATION, _item(location, editable=True))
+        self.table.setItem(index, self.CHECK, _item())
         self._loading = False
         self.table.setCurrentCell(index, 0)
         self.revalidate()
@@ -130,17 +135,17 @@ class CopiesEditor(QWidget):
         self._sync_editor()
         self.revalidate()
 
-    def add_generated(self, patterns: list[str]) -> None:
+    def add_generated(self, patterns: list[str], location: str = "") -> None:
         if len(self.rows) == 1 and not self.rows[0].pattern.strip():
             self.table.removeRow(0)
             self.rows.clear()
         for pattern in patterns:
-            self.add_row(pattern=pattern)
+            self.add_row(pattern=pattern, location=location)
 
     def _generate(self) -> None:
-        dialog = GenerateCopiesDialog(self)
+        dialog = GenerateCopiesDialog(self, self.db)
         if dialog.exec():
-            self.add_generated(dialog.patterns())
+            self.add_generated(dialog.patterns(), dialog.location.text())
 
     # -- editing ------------------------------------------------------------------
     def _sync_editor(self) -> None:
@@ -151,10 +156,14 @@ class CopiesEditor(QWidget):
         self._loading = False
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        if self._loading or item.column() != 0 or item.row() >= len(self.rows):
+        if self._loading or item.row() >= len(self.rows):
             return
-        self.rows[item.row()].name = item.text()
-        self.revalidate()
+        if item.column() == self.LOCATION:
+            self.rows[item.row()].location = item.text().strip()
+            self.changed.emit()
+        elif item.column() == 0:
+            self.rows[item.row()].name = item.text()
+            self.revalidate()
 
     def _on_pattern_changed(self) -> None:
         index = self.table.currentRow()
@@ -203,7 +212,7 @@ class CopiesEditor(QWidget):
             self.table.item(index, 1).setText(f"{result.count:,}")
             self.table.item(index, 2).setText(result.first)
             self.table.item(index, 3).setText(result.last)
-            check = self.table.item(index, 4)
+            check = self.table.item(index, self.CHECK)
             if row.problem:
                 check.setText(row.problem)
                 colour = theme.DANGER
@@ -239,11 +248,15 @@ class CopiesEditor(QWidget):
     def collect(self) -> list[tuple[str, list[tuple[str, int]]]]:
         return [(r.name.strip(), r.result.numbers) for r in self.rows]
 
+    def collect_locations(self) -> list[str | None]:
+        """The optional place of each copy, in the order of ``collect()``."""
+        return [r.location.strip() or None for r in self.rows]
+
 
 class GenerateCopiesDialog(QDialog):
     """Fill the copies table with several regular copies (each can be edited afterwards)."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, db=None):
         super().__init__(parent)
         self.setWindowTitle("Generate copies")
         self.setMinimumWidth(460)
@@ -257,6 +270,7 @@ class GenerateCopiesDialog(QDialog):
         self.first.setValidator(QRegularExpressionValidator(QRegularExpression(r"[0-9]{1,12}")))
         self.gap = QSpinBox()
         self.gap.setRange(0, 10_000_000)
+        self.location = LocationField(db)
         self.preview = label("", "muted", wrap=True)
 
         form = QFormLayout()
@@ -264,6 +278,7 @@ class GenerateCopiesDialog(QDialog):
         form.addRow("Bonds in each copy", self.size)
         form.addRow("First number of the first copy", self.first)
         form.addRow("Numbers skipped between copies", self.gap)
+        form.addRow("Location of these copies", self.location)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                    | QDialogButtonBox.StandardButton.Cancel)
         self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)

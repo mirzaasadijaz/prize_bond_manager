@@ -24,8 +24,12 @@ class CopiesPage(BasePage):
         Col("first_number", "1st bond number", 130, fmt=dash),
         Col("size", "Positions", 90, "right", numeric=True, export_raw=True,
             fmt=lambda v, r: thousands(v)),
-        Col("bonds", "Bonds", 80, "right", numeric=True, export_raw=True),
+        Col("bonds", "Held", 70, "right", numeric=True, export_raw=True,
+            export_title="Bonds held"),
+        Col("sold", "Sold", 70, "right", numeric=True, export_raw=True,
+            fmt=lambda v, r: str(v) if v else "-"),
         Col("won", "Won", 70, "right", numeric=True, export_raw=True),
+        Col("location", "Location", 130, fmt=dash),
         Col("price", "Price (Rs)", 110, "right"),
         Col("purchase_date", "Purchased", 110, fmt=dash),
         Col("note", "Note", 220, fmt=lambda v, r: v or ""),
@@ -39,10 +43,14 @@ class CopiesPage(BasePage):
             "win can tell you exactly where to look. Copies can differ in size and in numbers.")
         self.add_button = header.add_action(button("Add copies...", "primary"))
         self.view_button = header.add_action(button("View bonds"))
-        self.rename_button = header.add_action(button("Rename"))
+        self.sell_button = header.add_action(button("Sell copy...",
+                                                    tooltip="Sell the bonds of the selected copy "
+                                                            "(or some of them)"))
+        self.rename_button = header.add_action(button("Edit"))
         self.delete_button = header.add_action(button("Delete", "danger"))
         self.add_button.clicked.connect(lambda: actions.add_bonds(self.ctx, self, 0))
         self.view_button.clicked.connect(self._view)
+        self.sell_button.clicked.connect(self._sell)
         self.rename_button.clicked.connect(self._rename)
         self.delete_button.clicked.connect(self._delete)
         self.root.addWidget(header)
@@ -70,12 +78,22 @@ class CopiesPage(BasePage):
         one = self._selected() is not None
         for widget in (self.view_button, self.rename_button):
             widget.setEnabled(one)
+        copy = self._selected()
+        self.sell_button.setEnabled(bool(copy and copy["bonds"]))
         self.delete_button.setEnabled(bool(self.panel.selected_rows()))
 
     def _view(self) -> None:
         copy = self._selected()
         if copy:
             CopyContentsDialog(self.ctx, copy["id"], self).exec()
+
+    def _sell(self) -> None:
+        copy = self._selected()
+        if copy is None:
+            return
+        bonds = self.db.list_bonds(copy_id=copy["id"], sold=False)
+        if bonds:
+            actions.sell_bonds(self.ctx, self, bonds)
 
     def _rename(self) -> None:
         copy = self._selected()
@@ -88,11 +106,14 @@ class CopiesPage(BasePage):
             return
         names = ", ".join(r["name"] for r in rows[:3]) + (" ..." if len(rows) > 3 else "")
         bonds = sum(r["bonds"] for r in rows)
+        sold = sum(r["sold"] for r in rows)
         box = QMessageBox(QMessageBox.Icon.Warning, "Delete copies",
                           f"Delete {len(rows)} copy/copies ({names})?",
                           QMessageBox.StandardButton.NoButton, self)
-        box.setInformativeText(f"They hold {bonds:,} bond(s). You can delete the bonds too, or keep "
-                               "them as loose bonds without a copy or position.")
+        box.setInformativeText(
+            f"They hold {bonds:,} bond(s)" + (f" and {sold:,} sold bond(s)" if sold else "")
+            + ". You can delete the bonds too, or keep them as loose bonds without a copy or "
+              "position. The details of anything you sold stay on the Sales page.")
         delete_all = box.addButton("Delete copies and bonds", QMessageBox.ButtonRole.DestructiveRole)
         keep = box.addButton("Delete copies, keep bonds", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)

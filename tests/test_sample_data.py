@@ -53,3 +53,18 @@ def test_numbers_listed_under_a_word_heading_join_that_copy(db):
     copy = next(c for c in db.list_copies() if c["name"] == "Copy 3")
     assert [(b["number"], b["position"]) for b in db.copy_bonds(copy["id"])] == [
         ("123456", 1), ("234567", 2), ("345678", 3)]
+
+
+def test_location_sample_file_keeps_each_bonds_own_place(db):
+    parsed = load_records(SAMPLES / "bonds_with_location.csv")
+    assert parsed.has_location_column and len(parsed.records) == 21
+    result = import_file(db, SAMPLES / "bonds_with_location.csv",
+                         ImportOptions(default_location="Not sure"))
+    assert result.added == 21
+    places = {b["number"]: b["location"] for b in db.list_bonds()}
+    assert places["500001"] == "Home safe" and places["500003"] == "Office drawer"
+    assert places["510005"] == "Bank locker"
+    assert places["520001"] == "Not sure"                 # the empty cell takes the default
+    copies = {c["name"]: c["location"] for c in db.list_copies()}
+    assert copies["Locker Book 1"] == "Bank locker"
+    assert copies["Safe Book 1"] is None                  # its bonds are not all in one place

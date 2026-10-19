@@ -154,3 +154,64 @@ def test_upgraded_and_new_files_have_the_same_win_columns(old_file, tmp_path):
     assert "claim_status" in SCHEMA
     upgraded.close()
     fresh.close()
+
+
+# ------------------------------------------------------------------ version 2 -> 3
+@pytest.fixture
+def v2_file(tmp_path):
+    """A data file as the previous release (v2) left it: wins have claim columns, but there is no
+    location on bonds / copies, no sales and no source on draws."""
+    path = tmp_path / "v2.db"
+    con = sqlite3.connect(path)
+    con.executescript(V1_SCHEMA)
+    for sql in ("ALTER TABLE draws ADD COLUMN location TEXT",
+                "ALTER TABLE wins ADD COLUMN location TEXT",
+                "ALTER TABLE wins ADD COLUMN claim_status TEXT NOT NULL DEFAULT 'Not claimed yet'",
+                "ALTER TABLE wins ADD COLUMN feedback TEXT",
+                "ALTER TABLE wins ADD COLUMN updated_at TEXT"):
+        con.execute(sql)
+    con.executescript("""
+        INSERT INTO copies VALUES (1, 'Copy 1', '100001', 2, NULL, '2026-01-01 10:00:00');
+        INSERT INTO bonds VALUES (1, '100001', 100001, 750, '2025-01-10', 'active', 1, 1, '2026-01-01');
+        INSERT INTO bonds VALUES (2, '100002', 100002, 750, '2025-01-10', 'active', 1, 2, '2026-01-01');
+        INSERT INTO draws (id, draw_date, denomination, label, created_at, location)
+            VALUES (1, '2026-09-01', 750, 'Draw #97', '2026-09-02', 'Lahore');
+        PRAGMA user_version = 2;
+    """)
+    con.commit()
+    con.close()
+    return path
+
+
+def test_a_version_2_file_gets_locations_sales_and_draw_sources(v2_file):
+    db = Database(v2_file)
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert [b["location"] for b in db.list_bonds()] == [None, None]
+    assert db.list_copies()[0]["location"] is None and db.list_copies()[0]["sold"] == 0
+    assert db.list_draws()[0]["source"] == "Manual"              # what was typed in earlier
+    assert db.list_sales() == []
+    sale_id = db.record_sale([db.list_bonds()[0]["id"]], "2026-10-14", "Ali")      # sales work
+    assert db.get_sale(sale_id)["bonds"] == 1
+    assert any(a["action"] == "Data file upgraded" for a in db.list_activity())
+    assert v2_file.with_name("v2.db.before-upgrade.bak").exists()
+    db.close()
+
+
+def _columns(db):
+    return {t: [r["name"] for r in db.conn.execute(f"PRAGMA table_info({t})")]
+            for t in ("copies", "bonds", "draws", "wins", "sales", "sale_items")}
+
+
+def test_upgraded_and_new_files_end_up_with_the_same_columns(v2_file, tmp_path):
+    upgraded, fresh = Database(v2_file), Database(tmp_path / "new.db")
+    for table, columns in _columns(fresh).items():
+        assert set(_columns(upgraded)[table]) == set(columns), table
+    upgraded.close()
+    fresh.close()
+
+
+def test_a_version_1_file_goes_all_the_way_to_version_3(old_file):
+    db = Database(old_file)
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert db.list_sales() == [] and db.list_draws()[0]["source"] == "Manual"
+    db.close()

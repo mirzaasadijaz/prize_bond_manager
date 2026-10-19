@@ -6,7 +6,7 @@ from typing import Collection, Sequence
 
 from ..models import AddResult
 from ..processing.numbers import normalize_number
-from .core import chunks, now_iso
+from .core import KEEP, chunks, now_iso
 
 
 class DuplicateBondError(ValueError):
@@ -21,20 +21,26 @@ class CopyNameError(ValueError):
     """A copy with that name already exists."""
 
 
-# ``same_count`` = how many bonds hold this number (this denomination), including
+# ``same_count`` = how many bonds you hold with this number (this denomination), including
 # the bond itself.  Above 1 means the number sits in several copies: when it is
-# drawn, every one of those bonds wins.  ``times_won`` = how often this very bond
-# has won (a bond stays in play after a win, so it can win again).
+# drawn, every one of those bonds wins.  A sold bond has no "same number" partners (0).
+# ``times_won`` = how often this very bond has won (a bond stays in play after a win, so it
+# can win again).  ``sale_id`` / ``sold_date`` / ``sold_to`` are set once the bond is sold.
 BOND_SELECT = """
 SELECT b.id, b.number, b.num, b.denomination, b.purchase_date, b.status,
-       b.copy_id, b.position, b.created_at,
+       b.copy_id, b.position, b.created_at, b.location,
+       b.sale_id, b.sold_date, sl.buyer AS sold_to,
        c.name AS copy_name, c.first_number AS copy_first_number, c.size AS copy_size,
+       c.location AS copy_location,
        COALESCE(pw.cnt, 0) AS pending_count,
-       (SELECT COUNT(*) FROM bonds o
-         WHERE o.num = b.num AND o.denomination = b.denomination) AS same_count,
+       CASE WHEN b.sale_id IS NOT NULL THEN 0 ELSE
+            (SELECT COUNT(*) FROM bonds o
+              WHERE o.num = b.num AND o.denomination = b.denomination
+                AND o.sale_id IS NULL) END AS same_count,
        (SELECT COUNT(*) FROM wins x WHERE x.bond_id = b.id) AS times_won
 FROM bonds b
 LEFT JOIN copies c ON c.id = b.copy_id
+LEFT JOIN sales sl ON sl.id = b.sale_id
 LEFT JOIN (SELECT bond_id, COUNT(*) AS cnt FROM pending_wins
            WHERE status = 'pending' GROUP BY bond_id) pw ON pw.bond_id = b.id
 """
@@ -45,9 +51,13 @@ class BondsMixin:
     def list_bonds(self, won: bool | None = None, denomination: int | None = None,
                    number_from: int | None = None, number_to: int | None = None,
                    date_from: str | None = None, date_to: str | None = None,
-                   copy_id: int | None = None) -> list[dict]:
+                   copy_id: int | None = None, sold: bool | None = None) -> list[dict]:
+        """Bonds, optionally filtered.  ``sold``: None = all, False = the ones you still
+        hold, True = the ones you sold."""
         where: list[str] = []
         params: list = []
+        if sold is not None:
+            where.append("b.sale_id IS " + ("NOT NULL" if sold else "NULL"))
         if won is not None:                  # True: has won before, False: never won
             where.append(("" if won else "NOT ") +
                          "EXISTS (SELECT 1 FROM wins x WHERE x.bond_id = b.id)")
@@ -84,8 +94,9 @@ class BondsMixin:
                   copy_id: int | None = None) -> set[int]:
         """Which of ``keys`` are already held as bonds of this denomination.
 
-        Every bond counts (in any copy or none) unless ``copy_id``
-        is given, which restricts the check to that one copy.
+        Every bond you still hold counts (in any copy or none; sold bonds do not).  With
+        ``copy_id`` only that one copy is checked - and there sold bonds count too, because
+        they still sit in the copy and a copy never holds a number twice.
         """
         found: set[int] = set()
         for part in chunks(list(keys), 500):
@@ -95,6 +106,8 @@ class BondsMixin:
             if copy_id is not None:
                 sql += " AND copy_id = ?"
                 params.append(copy_id)
+            else:
+                sql += " AND sale_id IS NULL"
             found.update(r["num"] for r in self.conn.execute(sql, params))
         return found
 
@@ -134,33 +147,46 @@ class BondsMixin:
         return keep, skipped, shared
 
     # ------------------------------------------------------------ adding
-    def _insert_bonds(self, items: list[tuple[str, int, int | None, str | None]],
+    def _insert_bonds(self, items: list[tuple[str, int, int | None, str | None, str | None]],
                       denomination: int, copy_id: int | None = None) -> None:
-        """Insert ``(display, key, position, purchase_date)`` rows as active bonds."""
+        """Insert ``(display, key, position, purchase_date, location)`` rows as active bonds."""
         now = now_iso()
         self.conn.executemany(
             "INSERT INTO bonds (number, num, denomination, purchase_date, status, "
-            "copy_id, position, created_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
-            [(d, k, denomination, date or None, copy_id, pos, now)
-             for d, k, pos, date in items])
+            "copy_id, position, created_at, location) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)",
+            [(d, k, denomination, date or None, copy_id, pos, now, (where or "").strip() or None)
+             for d, k, pos, date, where in items])
+
+    @staticmethod
+    def _locations(count: int, location: str | None,
+                   locations: Sequence[str | None] | None) -> list[str | None]:
+        """One optional location per bond: its own (``locations``) or the common one."""
+        common = (location or "").strip() or None
+        if not locations:
+            return [common] * count
+        return [((loc or "").strip() or common) for loc in locations]
 
     def add_loose_bonds(self, numbers: list[tuple[str, int]], denomination: int,
                         purchase_date: str | None = None,
                         dates: Sequence[str | None] | None = None,
                         skip_existing: bool = False,
-                        skip_keys: Collection[int] | None = None) -> AddResult:
+                        skip_keys: Collection[int] | None = None,
+                        location: str | None = None,
+                        locations: Sequence[str | None] | None = None) -> AddResult:
         """Add bonds that do not belong to any copy.
 
         ``dates`` optionally gives one purchase date per number (overrides
-        ``purchase_date``).  A number that is already held is added again unless
+        ``purchase_date``); ``location`` is the optional place all of them are kept
+        (``locations`` gives one per number).  A number that is already held is added again unless
         ``skip_existing`` is set (or it is in ``skip_keys``); if it is drawn, all
         bonds holding it win.
         """
         result = AddResult()
         keep, result.skipped_duplicates, result.shared = self._screen(
             numbers, denomination, skip_existing, skip_keys)
-        fresh = [(numbers[i][0], numbers[i][1], None, dates[i] if dates else purchase_date)
-                 for i in keep]
+        where = self._locations(len(numbers), location, locations)
+        fresh = [(numbers[i][0], numbers[i][1], None, dates[i] if dates else purchase_date,
+                  where[i]) for i in keep]
         if fresh:
             with self.tx():
                 self._insert_bonds(fresh, denomination)
@@ -173,7 +199,9 @@ class BondsMixin:
                  dates: Sequence[str | None] | None = None,
                  positions: Sequence[int] | None = None,
                  skip_existing: bool = False,
-                 skip_keys: Collection[int] | None = None) -> AddResult:
+                 skip_keys: Collection[int] | None = None,
+                 location: str | None = None,
+                 locations: Sequence[str | None] | None = None) -> AddResult:
         """Create a copy whose bonds are ``numbers`` in physical order.
 
         Positions follow the order given (or ``positions`` when supplied, e.g.
@@ -181,7 +209,9 @@ class BondsMixin:
         or a sequence.  The same number may appear in other copies (they all win
         together); with ``skip_existing`` (or ``skip_keys``) numbers held elsewhere
         are left out.  Numbers that are left out still occupy their position in the
-        copy.
+        copy.  ``location`` (optional) is where the copy is kept: it is stored on the copy and
+        on each of its bonds (``locations`` gives a place per bond; the copy then shows the
+        place all of its bonds share, if there is one).
         """
         result = AddResult()
         if not numbers:
@@ -190,10 +220,13 @@ class BondsMixin:
         slots = list(positions) if positions else list(range(1, count + 1))
         keep, result.skipped_duplicates, result.shared = self._screen(
             numbers, denomination, skip_existing, skip_keys)
-        fresh = [(numbers[i][0], numbers[i][1], slots[i], dates[i] if dates else purchase_date)
-                 for i in keep]
+        where = self._locations(count, location, locations)
+        fresh = [(numbers[i][0], numbers[i][1], slots[i], dates[i] if dates else purchase_date,
+                  where[i]) for i in keep]
         if not fresh:
             return result
+        kept_places = {fresh_item[4] for fresh_item in fresh}
+        copy_location = next(iter(kept_places)) if len(kept_places) == 1 else None
         first_number = numbers[min(range(count), key=lambda i: slots[i])][0]
         with self.tx():
             wanted = (name or "").strip() or "Copy"
@@ -201,9 +234,9 @@ class BondsMixin:
             if final != wanted:
                 result.renamed_copies.append((wanted, final))
             cur = self.conn.execute(
-                "INSERT INTO copies (name, first_number, size, note, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (final, first_number, max(slots), note or None, now_iso()))
+                "INSERT INTO copies (name, first_number, size, note, created_at, location) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (final, first_number, max(slots), note or None, now_iso(), copy_location))
             copy_id = cur.lastrowid
             self._insert_bonds(fresh, denomination, copy_id)
             self.log("Copy added",
@@ -224,7 +257,9 @@ class BondsMixin:
                        purchase_date: str | None = None,
                        dates: Sequence[str | None] | None = None,
                        skip_existing: bool = False,
-                       skip_keys: Collection[int] | None = None) -> AddResult:
+                       skip_keys: Collection[int] | None = None,
+                       location: str | None = None,
+                       locations: Sequence[str | None] | None = None) -> AddResult:
         """Add more bonds at the end of an existing copy.
 
         Numbers the copy already holds are always left out (a copy never holds a
@@ -238,8 +273,9 @@ class BondsMixin:
         keep, result.skipped_duplicates, result.shared = self._screen(
             numbers, denomination, skip_existing, skip_keys, copy_id)
         start = self._next_position(copy_id)
-        fresh = [(numbers[i][0], numbers[i][1], start + i, dates[i] if dates else purchase_date)
-                 for i in keep]
+        where = self._locations(len(numbers), location, locations)
+        fresh = [(numbers[i][0], numbers[i][1], start + i, dates[i] if dates else purchase_date,
+                  where[i]) for i in keep]
         if fresh:
             with self.tx():
                 self._insert_bonds(fresh, denomination, copy_id)
@@ -254,10 +290,13 @@ class BondsMixin:
     # ------------------------------------------------- edit / delete bonds
     def update_bond(self, bond_id: int, number, denomination: int,
                     purchase_date: str | None, copy_id: int | None,
-                    position: int | None) -> None:
+                    position: int | None, location=KEEP) -> None:
         bond = self.get_bond(bond_id)
         if bond is None:
             raise ValueError("That bond no longer exists.")
+        if bond["sale_id"] is not None:
+            raise ValueError(f"Bond {bond['number']} was sold on {bond['sold_date']}. Undo the "
+                             "sale on the Sales page before changing it.")
         display, key = normalize_number(number)
         if copy_id is not None:
             # Other copies may hold the same number; the same copy may not.
@@ -285,6 +324,9 @@ class BondsMixin:
                 "UPDATE bonds SET number = ?, num = ?, denomination = ?, purchase_date = ?, "
                 "copy_id = ?, position = ? WHERE id = ?",
                 (display, key, denomination, purchase_date or None, copy_id, position, bond_id))
+            if location is not KEEP:
+                self.conn.execute("UPDATE bonds SET location = ? WHERE id = ?",
+                                  ((location or "").strip() or None, bond_id))
             if copy_id is not None:
                 self.conn.execute("UPDATE copies SET size = MAX(size, ?) WHERE id = ?",
                                   (position, copy_id))
@@ -308,8 +350,9 @@ class BondsMixin:
     def list_copies(self) -> list[dict]:
         return self.query(
             """
-            SELECT c.id, c.name, c.first_number, c.size, c.note, c.created_at,
-                   COUNT(b.id) AS bonds,
+            SELECT c.id, c.name, c.first_number, c.size, c.note, c.location, c.created_at,
+                   COALESCE(SUM(b.sale_id IS NULL), 0) AS bonds,
+                   COALESCE(SUM(b.sale_id IS NOT NULL), 0) AS sold,
                    COALESCE(SUM(EXISTS (SELECT 1 FROM wins x WHERE x.bond_id = b.id)), 0) AS won,
                    MIN(b.denomination) AS min_denomination,
                    MAX(b.denomination) AS max_denomination,
@@ -350,7 +393,13 @@ class BondsMixin:
                 highest = max(highest, int(match.group(1)))
         return [f"{prefix} {highest + i}" for i in range(1, count + 1)]
 
-    def rename_copy(self, copy_id: int, name: str, note: str | None = None) -> None:
+    def rename_copy(self, copy_id: int, name: str, note: str | None = None,
+                    location=KEEP, apply_to_bonds: bool = False) -> None:
+        """Change a copy's name and note, and (``location`` given) where it is kept.
+
+        With ``apply_to_bonds`` the same location is also set on every bond of the copy that you
+        still hold (bonds already sold keep the place they were sold from).
+        """
         name = (name or "").strip()
         if not name:
             raise CopyNameError("The copy needs a name.")
@@ -359,6 +408,12 @@ class BondsMixin:
         with self.tx():
             self.conn.execute("UPDATE copies SET name = ?, note = ? WHERE id = ?",
                               (name, note or None, copy_id))
+            if location is not KEEP:
+                place = (location or "").strip() or None
+                self.conn.execute("UPDATE copies SET location = ? WHERE id = ?", (place, copy_id))
+                if apply_to_bonds:
+                    self.conn.execute("UPDATE bonds SET location = ? WHERE copy_id = ? "
+                                      "AND sale_id IS NULL", (place, copy_id))
             self.log("Copy edited", name)
 
     def delete_copy(self, copy_id: int, delete_bonds: bool = False) -> int:

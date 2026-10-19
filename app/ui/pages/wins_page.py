@@ -38,6 +38,8 @@ class WinsPage(BasePage):
         Col("copy", "Copy (book)", 104),
         Col("copy_first_number", "1st bond of copy", 118, fmt=dash),
         Col("where", "Position in copy", 114),
+        Col("bond_location", "Bond kept at", 110, fmt=dash),
+        Col("sold_date", "Bond sold", 150, fmt=lambda v, r: reports.sold_text(r) or "-"),
         same_number_col(),
         Col("win_no", "Win no.", 72, "right", numeric=True,
             fmt=lambda v, r: reports.win_no_text(r)),

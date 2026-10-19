@@ -32,9 +32,10 @@ class PendingPage(BasePage):
         Col("copy", "Copy (book)", 104),
         Col("copy_first_number", "1st bond of copy", 126, fmt=dash),
         Col("where", "Position in copy", 124),
+        Col("bond_location", "Bond kept at", 110, fmt=dash),
         Col("times_won", "Won before", 88, "right", numeric=True, export_raw=True,
             fmt=lambda v, r: f"{v}x" if v else "-"),
-        Col("check", "Check", 150),
+        Col("check", "Check", 190),
         Col("found_at", "Found", 130),
     ]
 
@@ -98,7 +99,9 @@ class PendingPage(BasePage):
             r["prize"] = reports.prize_text(r)
             r["copy"] = reports.copy_text(r) if r["copy_name"] else "-"
             r["where"] = reports.position_text(r) or "-"
-            r["check"] = (r["note"] or "Rejected") if status == "rejected" else (r["warning"] or "OK")
+            sold = "Bond sold later - the win is from before the sale" if r["sale_id"] else "OK"
+            r["check"] = (r["note"] or "Rejected") if status == "rejected" else (
+                r["warning"] or sold)
         self.panel.set_rows(rows)
         self.status_text.setText(self.agent.last_run_text())
         self.auto.blockSignals(True)

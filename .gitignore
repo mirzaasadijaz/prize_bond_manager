@@ -1,5 +1,29 @@
+# Python
 __pycache__/
 *.pyc
-.pytest_cache/
+*.pyo
+*.pyd
+.Python
+
+# Virtual Environment
 .venv/
+venv/
+ENV/
+
+# Testing & Caching
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Database & Storage
 data/
+*.db
+*.db-journal
+*.db-lock
+
+# IDEs & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

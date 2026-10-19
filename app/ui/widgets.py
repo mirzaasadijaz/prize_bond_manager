@@ -146,7 +146,7 @@ class StatCard(QFrame):
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(2)
         self.value = label("0", "statvalue")
-        self.sub = label("", "muted")
+        self.sub = label("", "muted", wrap=True)
         layout.addWidget(label(title, "muted"))
         layout.addWidget(self.value)
         layout.addWidget(self.sub)

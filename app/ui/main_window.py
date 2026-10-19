@@ -12,12 +12,15 @@ from .. import __version__
 from ..config import APP_NAME
 from . import actions
 from .context import AppContext
+from .dialogs.online_dialog import OnlineDrawsDialog
+from .online_auto import check_online
 from .pages.bonds_page import BondsPage
 from .pages.copies_page import CopiesPage
 from .pages.dashboard import DashboardPage
 from .pages.draws_page import DrawsPage
 from .pages.history_page import HistoryPage
 from .pages.pending_page import PendingPage
+from .pages.sales_page import SalesPage
 from .pages.wins_page import WinsPage
 from .widgets import label
 
@@ -30,6 +33,7 @@ class MainWindow(QMainWindow):
         ("draws", "Draw Results", DrawsPage),
         ("pending", "Pending Wins", PendingPage),
         ("wins", "Win List", WinsPage),
+        ("sales", "Sales", SalesPage),
         ("history", "History", HistoryPage),
     ]
 
@@ -143,6 +147,11 @@ class MainWindow(QMainWindow):
         agent_menu = bar.addMenu("&Agent")
         self._action(agent_menu, "Run win-checking agent now", self._run_agent, "Ctrl+R")
         self._action(agent_menu, "Go to Pending Wins", lambda: self.show_page("pending"))
+        agent_menu.addSeparator()
+        self._action(agent_menu, "Get draw results from the web...", self.open_online, "Ctrl+G")
+        self._action(agent_menu, "Look for new draws online now",
+                     lambda: check_online(self.ctx, self, forced=True))
+        self._action(agent_menu, "Check a list of numbers...", self.open_checker)
 
         view_menu = bar.addMenu("&View")
         for number, (key, title, _) in enumerate(self.PAGES, start=1):
@@ -150,6 +159,17 @@ class MainWindow(QMainWindow):
 
         help_menu = bar.addMenu("&Help")
         self._action(help_menu, "About", self._about)
+
+    def open_online(self) -> None:
+        OnlineDrawsDialog(self.ctx, self).exec()
+
+    def open_checker(self) -> None:
+        from .dialogs.check_numbers import CheckNumbersDialog
+        CheckNumbersDialog(self.ctx, self).exec()
+
+    def start_online_check(self) -> bool:
+        """The quiet start-up check (does nothing unless it was switched on)."""
+        return check_online(self.ctx, self)
 
     def _run_agent(self) -> None:
         self.ctx.offer_review(self, self.ctx.run_agent("manual", force=True))

@@ -71,6 +71,19 @@ def location_text(win: dict) -> str:
     return (win.get("location") or win.get("draw_location") or "").strip()
 
 
+def kept_at_text(win: dict) -> str:
+    """Where the bond itself is kept (not where the draw / claim was)."""
+    return (win.get("bond_location") or "").strip()
+
+
+def sold_text(win: dict) -> str:
+    """'2026-11-01 to Ahmed' when the bond has been sold since, else an empty text."""
+    when = win.get("sold_date")
+    if not when:
+        return ""
+    return f"{when}" + (f" to {win['sold_to']}" if win.get("sold_to") else "")
+
+
 def repeat_text(win: dict) -> str:
     """'2nd of 3 wins' for a bond that has won more than once, else an empty text."""
     times = int(win.get("times_won") or 0)
@@ -93,12 +106,16 @@ def claim_lines(win: dict) -> list[tuple[str, str]]:
     lines: list[tuple[str, str]] = []
     if location_text(win):
         lines.append(("Location", location_text(win)))
+    if kept_at_text(win):
+        lines.append(("Bond kept at", kept_at_text(win)))
     if win.get("claim_status"):
         lines.append(("Status", win["claim_status"]))
     if (win.get("feedback") or "").strip():
         lines.append(("Feedback", win["feedback"].strip()))
     if repeat_text(win):
         lines.append(("This bond has won", repeat_text(win)))
+    if sold_text(win):
+        lines.append(("Bond sold", sold_text(win)))
     return lines
 
 
@@ -120,7 +137,8 @@ def detail_lines(win: dict) -> list[tuple[str, str]]:
     ] + copy_lines(win)
 
 
-COPY_LABEL_WIDTH = max(len(label) for label, _ in copy_lines({}) + [("This bond has won", "")])
+COPY_LABEL_WIDTH = max(len(label) for label, _ in copy_lines({}) + [
+    ("This bond has won", ""), ("Bond kept at", ""), ("Bond sold", "")])
 
 
 # ------------------------------------------------------------------ grouping
@@ -255,7 +273,8 @@ def win_report_html(wins: list[dict], title: str = "Prize Bond Win Report") -> s
 # -------------------------------------------------------------------- export
 WIN_HEADERS = ["Draw date", "Draw", "Bond number", "Denomination", "Prize", "Prize amount",
                "Bonds with this number", "Copy (book)", "1st bond number of copy",
-               "Position in copy", "Copy size", "Location"]
+               "Position in copy", "Copy size", "Location", "Bond kept at", "Bond sold on",
+               "Bond sold to"]
 CLAIM_HEADERS = ["Status", "Feedback", "Win no.", "Times this bond won"]
 
 
@@ -276,7 +295,8 @@ def win_table(wins: list[dict], stamp_header: str = "Approved on",
                w.get("copy_name") or "", first_number_text(w),
                w.get("position") if w.get("copy_name") else None,
                w.get("copy_size") if w.get("copy_name") else None,
-               location_text(w)]
+               location_text(w), kept_at_text(w), w.get("sold_date") or "",
+               w.get("sold_to") or ""]
         if claims:
             row += [w.get("claim_status") or "", (w.get("feedback") or "").strip(),
                     w.get("win_no"), w.get("times_won")]

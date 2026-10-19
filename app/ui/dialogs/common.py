@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import re
 
-from PyQt6.QtCore import QDate
-from PyQt6.QtWidgets import QCheckBox, QComboBox, QDateEdit, QHBoxLayout, QWidget
+from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QCompleter, QDateEdit, QHBoxLayout, QLineEdit,
+                             QWidget)
 
 from ...config import DEFAULT_DENOMINATIONS
 from ..widgets import _settings
@@ -100,3 +101,29 @@ class DateField(QWidget):
         if self.unknown:
             self.unknown.setChecked(False)
         self.edit.setDate(parsed)
+
+
+class LocationField(QLineEdit):
+    """Optional 'where is it' text; suggests places already used anywhere in the data file.
+
+    ``value()`` is the trimmed text, or None when it was left empty.
+    """
+
+    HINT = "optional - e.g. home safe, bank locker, Lahore office"
+
+    def __init__(self, db=None, placeholder: str | None = None, parent=None):
+        super().__init__(parent)
+        self.setPlaceholderText(placeholder or self.HINT)
+        self.setClearButtonEnabled(True)
+        known = db.known_locations() if db is not None else []
+        if known:
+            completer = QCompleter(known, self)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            self.setCompleter(completer)
+
+    def value(self) -> str | None:
+        return self.text().strip() or None
+
+    def set_value(self, text: str | None) -> None:
+        self.setText(text or "")
