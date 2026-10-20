@@ -16,11 +16,14 @@ ENV/
 .coverage
 htmlcov/
 
-# Database & Storage
+# Database, Backups & Storage
 data/
 *.db
 *.db-journal
 *.db-lock
+*.lock
+*.bak
+*.before-upgrade.bak
 
 # IDEs & OS
 .vscode/

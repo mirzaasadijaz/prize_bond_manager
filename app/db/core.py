@@ -203,10 +203,13 @@ class DatabaseCore:
             self._depth = 0
             self._migrate()
         except BaseException:
+            conn = getattr(self, "conn", None)
+            if conn is not None:                 # Windows cannot delete a file that is still open
+                conn.close()
             if self._lock:
                 self._lock.release()
             raise
-
+        
     # -- lifecycle -----------------------------------------------------
     def _migrate(self) -> None:
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
